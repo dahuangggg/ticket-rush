@@ -56,9 +56,6 @@ mybatis-plus:
       logic-not-delete-value: 0
 
 ticket-rush:
-  kafka:
-    topic:
-      event-cache-invalidate: event.cache.invalidate
   redisson:
     enabled: ${REDISSON_ENABLED:false}
   auth:
