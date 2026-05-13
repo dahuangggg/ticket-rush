@@ -9,11 +9,13 @@ import org.redisson.api.RBloomFilter;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 
 @Service
+@ConditionalOnProperty(name = "ticket-rush.redisson.enabled", havingValue = "true")
 public class BloomFilterServiceImpl implements BloomFilterService {
 
     private static final Logger log = LoggerFactory.getLogger(BloomFilterServiceImpl.class);
@@ -47,7 +49,7 @@ public class BloomFilterServiceImpl implements BloomFilterService {
      * 注意：deleted = 0 的过滤由 MyBatis-Plus 的 @TableLogic 自动处理。
      */
     @PostConstruct
-    public void init() {
+    void init() {
         List<Long> eventIds = eventMapper.selectList(
                 new LambdaQueryWrapper<Event>().select(Event::getId)
         ).stream().map(Event::getId).toList();
