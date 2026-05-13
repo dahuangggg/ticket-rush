@@ -8,6 +8,7 @@ import dev.dahuangggg.ticketrush.dto.event.EventDTO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -109,7 +110,13 @@ public class EventCacheManager {
 
             if (Boolean.TRUE.equals(locked)) {
                 try {
-                    // 获锁成功，查 DB 重建缓存
+                    // 获锁后再次检查 Redis，避免重复重建（另一个线程可能已完成重建）
+                    String doubleCheckJson = redisTemplate.opsForValue().get(DETAIL_KEY + eventId);
+                    if (doubleCheckJson != null) {
+                        eventDetailLocalCache.put(eventId, doubleCheckJson);
+                        return deserialize(doubleCheckJson, EventDetailDTO.class);
+                    }
+                    // 确认缓存仍未命中，查 DB 重建
                     EventDetailDTO dto = dbLoader.get();
                     if (dto != null) {
                         String json = serialize(dto);
@@ -261,6 +268,12 @@ public class EventCacheManager {
         eventListLocalCache.put(cacheKey, json);
     }
 
+    @PreDestroy
+    void shutdownRebuildExecutor() {
+        REBUILD_EXECUTOR.shutdown();
+        log.info("EventCacheManager rebuild executor shutdown initiated");
+    }
+
     // ========== 序列化工具 ==========
 
     private <T> String serialize(T obj) {
@@ -290,7 +303,6 @@ public class EventCacheManager {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private <T> LogicalExpireValue<T> deserializeLogical(String json, Class<T> dataClass) {
         try {
             var type = objectMapper.getTypeFactory()
