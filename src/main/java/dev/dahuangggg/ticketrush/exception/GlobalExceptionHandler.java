@@ -66,6 +66,12 @@ public class GlobalExceptionHandler {
         return new ErrorResponse("BAD_REQUEST", message);
     }
 
+    @ExceptionHandler(EventNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public ErrorResponse handleEventNotFound(EventNotFoundException exception) {
+        return new ErrorResponse("EVENT_NOT_FOUND", exception.getMessage());
+    }
+
     /**
      * 未命中错误处理。
      */
