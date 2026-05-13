@@ -18,4 +18,10 @@ public interface EventService {
      * 查询活动详情，包含完整的缓存策略（布隆过滤器、热点/普通路由、穿透防护）。
      */
     EventDetailDTO getEventDetail(Long eventId);
+
+    /**
+     * 同步删除活动缓存，失败时发送 Kafka 消息异步兜底。
+     * 活动信息更新后调用，保证缓存一致性。
+     */
+    void invalidateCache(Long eventId);
 }

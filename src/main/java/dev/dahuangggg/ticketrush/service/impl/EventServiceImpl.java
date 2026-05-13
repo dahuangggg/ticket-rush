@@ -13,7 +13,6 @@ import dev.dahuangggg.ticketrush.service.BloomFilterService;
 import dev.dahuangggg.ticketrush.service.EventService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -40,21 +39,21 @@ public class EventServiceImpl implements EventService {
     private final StringRedisTemplate redisTemplate;
 
     /*
-     * BloomFilterService is conditional on ticket-rush.redisson.enabled=true.
-     * When Redisson is disabled, no bean is registered — inject as optional
-     * and treat null as "pass-through" (skip bloom filter check).
+     * BloomFilterService is always present: either BloomFilterServiceImpl
+     * (when Redisson is enabled) or NoOpBloomFilterService (when disabled).
      */
-    @Autowired(required = false)
-    private BloomFilterService bloomFilterService;
+    private final BloomFilterService bloomFilterService;
 
     public EventServiceImpl(EventMapper eventMapper,
                             EventCacheManager cacheManager,
                             EventCacheInvalidationProducer cacheInvalidationProducer,
-                            StringRedisTemplate redisTemplate) {
+                            StringRedisTemplate redisTemplate,
+                            BloomFilterService bloomFilterService) {
         this.eventMapper = eventMapper;
         this.cacheManager = cacheManager;
         this.cacheInvalidationProducer = cacheInvalidationProducer;
         this.redisTemplate = redisTemplate;
+        this.bloomFilterService = bloomFilterService;
     }
 
     /**
@@ -102,8 +101,7 @@ public class EventServiceImpl implements EventService {
     @Override
     public EventDetailDTO getEventDetail(Long eventId) {
         // 1. 布隆过滤器拦截（一定不存在，无需查 Redis 和 DB）
-        //    bloomFilterService 为 null 时（Redisson 未启用）跳过此检查
-        if (bloomFilterService != null && !bloomFilterService.mightExist(eventId)) {
+        if (!bloomFilterService.mightExist(eventId)) {
             throw new EventNotFoundException(eventId);
         }
 
@@ -112,32 +110,43 @@ public class EventServiceImpl implements EventService {
             throw new EventNotFoundException(eventId);
         }
 
-        // 3. 先从 DB 判断 isHot，决定缓存策略
-        //    注意：isHot 可能在缓存中不存在（如首次访问），需查 DB 一次获取路由信息
-        Event eventMeta = eventMapper.selectById(eventId);
+        // 3. 优先尝试热点活动缓存（不提前查 DB）
+        //    热点活动命中率极高，无需每次查 DB 确认 isHot
+        EventDetailDTO result = cacheManager.getHotEventDetail(eventId, () -> {
+            // dbLoader 仅在热点缓存逻辑过期、异步重建时调用
+            Event event = eventMapper.selectById(eventId);
+            return event != null ? toDetailDTO(event) : null;
+        });
 
-        EventDetailDTO result;
+        if (result != null) {
+            // 命中热点缓存（可能是旧数据，等待异步重建），直接返回
+            trackAccessAsync(eventId, null);
+            return result;
+        }
 
-        if (eventMeta != null && Integer.valueOf(1).equals(eventMeta.getIsHot())) {
-            // 热点活动：逻辑过期缓存
-            result = cacheManager.getHotEventDetail(eventId, () -> toDetailDTO(eventMeta));
-            if (result == null) {
-                // 冷启动（缓存未预热），立即预热并返回 DB 数据
-                result = toDetailDTO(eventMeta);
-                cacheManager.warmUp(eventId, result);
+        // 4. 热点缓存未命中（普通活动，或热点活动冷启动）
+        //    走 Cache-Aside + 互斥锁路径，dbLoader 在缓存未命中时才调 DB
+        result = cacheManager.getNormalEventDetail(eventId, () -> {
+            Event event = eventMapper.selectById(eventId);
+            if (event == null) {
+                return null;
             }
-        } else if (eventMeta != null) {
-            // 普通活动：Cache-Aside + 互斥锁
-            result = cacheManager.getNormalEventDetail(eventId, () -> toDetailDTO(eventMeta));
-        } else {
-            // DB 也不存在，缓存空值防止下次穿透
+            // 若发现是热点活动（冷启动场景），立即预热热点缓存
+            if (Integer.valueOf(1).equals(event.getIsHot())) {
+                EventDetailDTO dto = toDetailDTO(event);
+                cacheManager.warmUp(eventId, dto);
+                return dto;
+            }
+            return toDetailDTO(event);
+        });
+
+        if (result == null) {
+            // DB 确认不存在，缓存空值防止下次穿透
             cacheManager.cacheNull(eventId);
             throw new EventNotFoundException(eventId);
         }
 
-        // 4. 异步计数，动态热点检测（不阻塞响应）
-        trackAccessAsync(eventId, eventMeta);
-
+        trackAccessAsync(eventId, null);
         return result;
     }
 
@@ -181,7 +190,7 @@ public class EventServiceImpl implements EventService {
             try {
                 String key = ACCESS_COUNT_KEY + eventId;
                 Long count = redisTemplate.opsForValue().increment(key);
-                if (count != null && count == 1) {
+                if (count != null && count == 1L) {
                     redisTemplate.expire(key, ACCESS_COUNT_WINDOW);
                 }
                 if (count != null && count >= HOT_DETECT_THRESHOLD
@@ -191,6 +200,7 @@ public class EventServiceImpl implements EventService {
                     // 自动触发预热，作为运营漏标的兜底
                     cacheManager.warmUp(eventId, toDetailDTO(event));
                 }
+                // event == null means we arrived via the hot-cache path; warm-up already handled
             } catch (Exception e) {
                 log.warn("Access tracking failed for eventId={}", eventId, e);
             }
