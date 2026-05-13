@@ -1,0 +1,74 @@
+server:
+  port: ${SERVER_PORT:8081}
+  address: ${SERVER_ADDRESS:0.0.0.0}
+
+spring:
+  application:
+    name: ticket-rush
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          no-store: true
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:13306}/${MYSQL_DATABASE:ticket_rush}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:123456}
+    hikari:
+      maximum-pool-size: ${MYSQL_POOL_MAX_SIZE:20}
+      minimum-idle: ${MYSQL_POOL_MIN_IDLE:5}
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:16379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3s
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 16
+          min-idle: 2
+          time-between-eviction-runs: 10s
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:9092}
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:ticket-rush}
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: dev.dahuangggg.ticketrush.entity
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: assign_id
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+ticket-rush:
+  redisson:
+    enabled: ${REDISSON_ENABLED:false}
+  auth:
+    sms-code-ttl: ${SMS_CODE_TTL:5m}
+    refresh-token-ttl: ${REFRESH_TOKEN_TTL:14d}
+  jwt:
+    issuer: ${JWT_ISSUER:ticket-rush}
+    secret: ${JWT_SECRET:VPz3ke7rVq0xqj+ouPOhWuzi4nHoRZak8Vc9dl3hCSw=}
+    access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:2h}
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+      base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+      chat-model: ${OPENAI_CHAT_MODEL:gpt-4.1-mini}
+      embedding-model: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
+    chroma:
+      base-url: ${CHROMA_BASE_URL:http://127.0.0.1:8000}
+      collection-name: ${CHROMA_COLLECTION:ticket-rush}

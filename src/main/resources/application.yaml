@@ -1,0 +1,5 @@
+spring:
+  config:
+    name: ticket-rush
+  profiles:
+    active: dev
