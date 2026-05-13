@@ -1,5 +1,8 @@
 package dev.dahuangggg.ticketrush.config;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import org.springframework.context.annotation.Bean;
@@ -9,6 +12,17 @@ import java.time.Duration;
 
 @Configuration
 public class CaffeineConfig {
+
+    /**
+     * 共享的 ObjectMapper，支持 Java 8 时间类型序列化。
+     * EventCacheManager 及其他需要 JSON 序列化的组件注入此 bean。
+     */
+    @Bean
+    public ObjectMapper objectMapper() {
+        return new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    }
 
     /**
      * 活动详情本地缓存。
