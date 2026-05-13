@@ -1,5 +1,6 @@
 package dev.dahuangggg.ticketrush.config;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -14,14 +15,19 @@ import java.time.Duration;
 public class CaffeineConfig {
 
     /**
-     * 共享的 ObjectMapper，支持 Java 8 时间类型序列化。
+     * 共享的 ObjectMapper（Jackson 2.x），支持 Java 8 时间类型序列化。
      * EventCacheManager 及其他需要 JSON 序列化的组件注入此 bean。
+     *
+     * 注：Spring Boot 4 的自动配置注册的是 Jackson 3（tools.jackson）的 JsonMapper，
+     * 而本项目使用 Jackson 2（com.fasterxml.jackson），因此需要显式定义此 bean。
+     * 手动对齐 Spring Boot 的默认 ObjectMapper 配置（FAIL_ON_UNKNOWN_PROPERTIES=false 等）。
      */
     @Bean
     public ObjectMapper objectMapper() {
         return new ObjectMapper()
                 .registerModule(new JavaTimeModule())
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
     }
 
     /**

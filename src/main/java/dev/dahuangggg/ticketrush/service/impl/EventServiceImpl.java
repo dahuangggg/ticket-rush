@@ -19,11 +19,21 @@ import org.springframework.util.StringUtils;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class EventServiceImpl implements EventService {
 
     private static final Logger log = LoggerFactory.getLogger(EventServiceImpl.class);
+
+    private static final ExecutorService ACCESS_TRACKER_EXECUTOR =
+            Executors.newFixedThreadPool(2, r -> {
+                Thread t = new Thread(r, "access-tracker");
+                t.setDaemon(true);
+                return t;
+            });
 
     /*
      * 动态热点检测阈值：1 分钟内访问量超过此值，触发缓存预热并告警。
@@ -110,17 +120,21 @@ public class EventServiceImpl implements EventService {
             throw new EventNotFoundException(eventId);
         }
 
+        // 使用原子引用捕获 DB 查询结果，用于后续异步热点检测
+        AtomicReference<Event> loadedEvent = new AtomicReference<>();
+
         // 3. 优先尝试热点活动缓存（不提前查 DB）
         //    热点活动命中率极高，无需每次查 DB 确认 isHot
         EventDetailDTO result = cacheManager.getHotEventDetail(eventId, () -> {
             // dbLoader 仅在热点缓存逻辑过期、异步重建时调用
             Event event = eventMapper.selectById(eventId);
+            loadedEvent.set(event);  // 捕获 DB 查询结果
             return event != null ? toDetailDTO(event) : null;
         });
 
         if (result != null) {
             // 命中热点缓存（可能是旧数据，等待异步重建），直接返回
-            trackAccessAsync(eventId, null);
+            trackAccessAsync(eventId, loadedEvent.get());
             return result;
         }
 
@@ -128,6 +142,7 @@ public class EventServiceImpl implements EventService {
         //    走 Cache-Aside + 互斥锁路径，dbLoader 在缓存未命中时才调 DB
         result = cacheManager.getNormalEventDetail(eventId, () -> {
             Event event = eventMapper.selectById(eventId);
+            loadedEvent.set(event);  // 捕获 DB 查询结果
             if (event == null) {
                 return null;
             }
@@ -146,7 +161,7 @@ public class EventServiceImpl implements EventService {
             throw new EventNotFoundException(eventId);
         }
 
-        trackAccessAsync(eventId, null);
+        trackAccessAsync(eventId, loadedEvent.get());
         return result;
     }
 
@@ -184,9 +199,14 @@ public class EventServiceImpl implements EventService {
                 .toList();
     }
 
+    @jakarta.annotation.PreDestroy
+    void shutdownAccessTracker() {
+        ACCESS_TRACKER_EXECUTOR.shutdown();
+    }
+
     private void trackAccessAsync(Long eventId, Event event) {
-        // 访问量统计不能影响主流程，异步执行（Java 17 兼容：使用普通守护线程）
-        Thread t = new Thread(() -> {
+        // 访问量统计不能影响主流程，使用共享有界线程池异步执行
+        ACCESS_TRACKER_EXECUTOR.submit(() -> {
             try {
                 String key = ACCESS_COUNT_KEY + eventId;
                 Long count = redisTemplate.opsForValue().increment(key);
@@ -205,8 +225,6 @@ public class EventServiceImpl implements EventService {
                 log.warn("Access tracking failed for eventId={}", eventId, e);
             }
         });
-        t.setDaemon(true);
-        t.start();
     }
 
     private String buildListCacheKey(EventListRequest request) {
