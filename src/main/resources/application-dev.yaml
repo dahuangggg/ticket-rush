@@ -40,6 +40,8 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    admin:
+      auto-create: true
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
@@ -54,6 +56,9 @@ mybatis-plus:
       logic-not-delete-value: 0
 
 ticket-rush:
+  kafka:
+    topic:
+      event-cache-invalidate: event.cache.invalidate
   redisson:
     enabled: ${REDISSON_ENABLED:false}
   auth:
