@@ -32,7 +32,7 @@ The current `pom.xml` already includes Kafka dependencies. Use Kafka for async o
 | 2 | Event list and event detail | ✅ Done |
 | 3 | Ticket SKU query | ✅ Done |
 | 4 | Redis stock initialization | ✅ Done |
-| 5 | Lua rush eligibility validation | 🔲 Pending |
+| 5 | Lua rush eligibility validation | ✅ Done |
 | 6 | Async order creation with Kafka | 🔲 Pending |
 | 7 | Order query, simulated payment, and cancel | 🔲 Pending |
 | 8 | AI function calling | 🔲 Pending |
@@ -303,9 +303,9 @@ TICKET_SKU_NOT_FOUND   404   -- SKU does not exist or is soft-deleted
 
 ---
 
-### 5. Ticket Rush Module 🔲 Pending
+### 5. Ticket Rush Module ✅ Done
 
-This is the core module. Use Redis + Lua to implement atomic stock pre-deduction and one-user-one-order validation.
+This is the core module. Uses Redis + Lua to implement atomic stock pre-deduction and one-user-one-order validation.
 
 Main flow:
 
@@ -351,7 +351,7 @@ Return codes:
 API:
 
 ```text
-POST /api/ticket-rush/requests
+POST /api/ticket-rush/requests    -- Requires Bearer token
 ```
 
 Request body:
@@ -362,6 +362,24 @@ Request body:
   "skuId": 10,
   "quantity": 1
 }
+```
+
+Notes:
+
+- Lua script loaded via `DefaultRedisScript<Long>` from `classpath:lua/ticket_rush.lua`; Spring Data Redis auto-caches SHA after first `EVAL` (subsequent calls use `EVALSHA`).
+- `Long.valueOf(1L).equals(result)` used for null-safe Lua result comparison (result can be null in cluster pipeline scenarios).
+- `ticket:order:user:{skuId}` Set has **no TTL** — Module 7 cancel/timeout rollback must call `SREM` to remove userId, otherwise user can never re-rush the same SKU after cancellation.
+- Kafka topic: `ticket.rush.requests`; partition key: `userId-skuId` (same user+SKU always hits the same partition for ordered processing).
+- `TicketRushMessage` carries `messageId` (UUID) for order consumer idempotency in Module 6.
+- `quantity` is validated `@Min(1) @Max(1)` in `TicketRushRequest`; current flow only supports one ticket per rush.
+- `userId` is read from `UserContext` (set by JWT interceptor) — never trusted from the request body.
+
+Error codes:
+
+```text
+SOLD_OUT          400   -- stock <= 0 or stock key not initialized
+DUPLICATE_ORDER   400   -- userId already in ticket:order:user:{skuId}
+UNAUTHORIZED      401   -- missing or invalid JWT
 ```
 
 ### 6. Order Module 🔲 Pending
