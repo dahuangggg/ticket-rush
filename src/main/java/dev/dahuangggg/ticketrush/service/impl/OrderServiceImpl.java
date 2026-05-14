@@ -62,6 +62,15 @@ public class OrderServiceImpl implements OrderService {
 
         // 查询票档单价，计算订单总金额（单位分）
         TicketSku sku = ticketSkuMapper.selectById(message.skuId());
+        if (sku == null) {
+            // 票档不存在时，将消息标记为失败，避免 Kafka 因异常无限重试
+            log.error("票档不存在，跳过创单: skuId={}", message.skuId());
+            ticketOrderMsgMapper.updateById(
+                    TicketOrderMsg.builder().id(orderMsg.getId()).status(2)
+                            .errorMessage("票档不存在: " + message.skuId()).build()
+            );
+            return;
+        }
         long totalAmount = sku.getPrice() * message.quantity();
 
         // 创建待支付订单，orderNo 用 UUID 保证全局唯一
@@ -74,6 +83,8 @@ public class OrderServiceImpl implements OrderService {
                 .totalAmount(totalAmount)
                 .status(0)
                 .build();
+        // 上游 Lua 脚本已通过 SADD ticket:order:user:{skuId} 保证同一 (userId, skuId) 只发送一条消息，
+        // uk_user_sku 唯一键在正常流程下不会冲突，此处作为最终兜底。
         ticketOrderMapper.insert(order);
 
         // 标记消息处理成功（updateById 仅更新非 null 字段，其余字段保持不变）

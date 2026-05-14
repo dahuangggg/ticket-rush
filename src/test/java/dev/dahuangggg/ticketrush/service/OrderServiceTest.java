@@ -92,5 +92,12 @@ class OrderServiceTest {
                         .eq(TicketOrder::getUserId, TEST_USER_ID)
                         .eq(TicketOrder::getSkuId, TEST_SKU_ID));
         assertThat(orderCount).isEqualTo(1);
+
+        // 消息追踪记录仍应只有一条，且状态为成功
+        Long msgCount = ticketOrderMsgMapper.selectCount(
+                new LambdaQueryWrapper<TicketOrderMsg>()
+                        .eq(TicketOrderMsg::getMessageId, testMessageId)
+                        .eq(TicketOrderMsg::getStatus, 1));
+        assertThat(msgCount).isEqualTo(1);
     }
 }
