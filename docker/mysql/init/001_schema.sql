@@ -58,11 +58,12 @@ CREATE TABLE IF NOT EXISTS tb_ticket_order (
     status TINYINT NOT NULL DEFAULT 0 COMMENT 'Status: 0 pending payment, 1 paid, 2 canceled, 3 timeout',
     pay_time DATETIME NULL COMMENT 'Payment time',
     cancel_time DATETIME NULL COMMENT 'Cancel time',
+    active_status TINYINT GENERATED ALWAYS AS (CASE WHEN status IN (0, 1) THEN status ELSE NULL END) STORED COMMENT 'Unique guard for active orders only',
     deleted TINYINT NOT NULL DEFAULT 0 COMMENT 'Logical delete flag: 0 normal, 1 deleted',
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Create time',
     update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
     UNIQUE KEY uk_ticket_order_no (order_no),
-    UNIQUE KEY uk_user_sku (user_id, sku_id),
+    UNIQUE KEY uk_user_sku_active_status (user_id, sku_id, active_status),
     KEY idx_ticket_order_user_status (user_id, status),
     KEY idx_ticket_order_event_sku_status (event_id, sku_id, status),
     KEY idx_ticket_order_create_time (create_time)
@@ -84,6 +85,21 @@ CREATE TABLE IF NOT EXISTS tb_ticket_order_msg (
     KEY idx_ticket_order_msg_status_time (status, create_time),
     KEY idx_ticket_order_msg_user_sku (user_id, sku_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Ticket order MQ message tracking';
+
+CREATE TABLE IF NOT EXISTS tb_ticket_rollback_task (
+    id BIGINT NOT NULL PRIMARY KEY COMMENT 'Rollback task id (Snowflake ID assigned by application)',
+    order_id BIGINT NOT NULL COMMENT 'Order id',
+    user_id BIGINT NOT NULL COMMENT 'User id',
+    sku_id BIGINT NOT NULL COMMENT 'Ticket SKU id',
+    status TINYINT NOT NULL DEFAULT 0 COMMENT 'Status: 0 pending, 1 success, 2 failed',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT 'Retry count',
+    error_message VARCHAR(1024) NULL COMMENT 'Last failure reason',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT 'Logical delete flag: 0 normal, 1 deleted',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Create time',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
+    UNIQUE KEY uk_rollback_task_order (order_id),
+    KEY idx_rollback_task_status_time (status, create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Redis rollback compensation task';
 
 CREATE TABLE IF NOT EXISTS tb_ai_chat_session (
     id BIGINT NOT NULL PRIMARY KEY COMMENT 'AI chat session id',

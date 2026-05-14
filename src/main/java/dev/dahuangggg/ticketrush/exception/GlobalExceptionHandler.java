@@ -91,6 +91,15 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 处理票档当前不可抢的情况。
+     */
+    @ExceptionHandler(TicketSkuUnavailableException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ErrorResponse handleTicketSkuUnavailable(TicketSkuUnavailableException exception) {
+        return new ErrorResponse("TICKET_SKU_UNAVAILABLE", exception.getMessage());
+    }
+
+    /**
      * 处理订单不存在的情况。
      */
     @ExceptionHandler(OrderNotFoundException.class)

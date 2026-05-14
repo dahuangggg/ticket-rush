@@ -2,14 +2,19 @@ package dev.dahuangggg.ticketrush.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import dev.dahuangggg.ticketrush.entity.TicketOrder;
+import dev.dahuangggg.ticketrush.entity.TicketRollbackTask;
 import dev.dahuangggg.ticketrush.exception.OrderNotFoundException;
 import dev.dahuangggg.ticketrush.exception.OrderNotPendingException;
 import dev.dahuangggg.ticketrush.mapper.TicketOrderMapper;
+import dev.dahuangggg.ticketrush.mapper.TicketRollbackTaskMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -28,10 +33,16 @@ class PaymentServiceTest {
     private TicketOrderMapper ticketOrderMapper;
 
     @Autowired
+    private TicketRollbackTaskMapper ticketRollbackTaskMapper;
+
+    @Autowired
     private StringRedisTemplate redisTemplate;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private FakeRedisRollbackService fakeRedisRollbackService;
 
     // 测试专用 userId，与其他测试用例不冲突
     private static final Long TEST_USER_ID  = 99002L;
@@ -44,6 +55,8 @@ class PaymentServiceTest {
     void setup() {
         // 物理删除旧数据，避免唯一索引冲突
         jdbcTemplate.update("DELETE FROM tb_ticket_order WHERE user_id = ?", TEST_USER_ID);
+        jdbcTemplate.update("DELETE FROM tb_ticket_rollback_task WHERE user_id = ?", TEST_USER_ID);
+        fakeRedisRollbackService.failNextRollback = false;
 
         // 初始化 Redis：向 stock 写入已知值，向 user set 加入测试 userId
         redisTemplate.opsForValue().set("ticket:stock:" + TEST_SKU_ID, "10");
@@ -57,7 +70,7 @@ class PaymentServiceTest {
                 .skuId(TEST_SKU_ID)
                 .quantity(1)
                 .totalAmount(38000L)
-                .status(0)
+                .status(TicketOrder.STATUS_PENDING)
                 .build();
         ticketOrderMapper.insert(order);
         testOrderId = order.getId();
@@ -66,6 +79,7 @@ class PaymentServiceTest {
     @AfterEach
     void cleanup() {
         jdbcTemplate.update("DELETE FROM tb_ticket_order WHERE user_id = ?", TEST_USER_ID);
+        jdbcTemplate.update("DELETE FROM tb_ticket_rollback_task WHERE user_id = ?", TEST_USER_ID);
         redisTemplate.delete("ticket:stock:" + TEST_SKU_ID);
         redisTemplate.opsForSet().remove("ticket:order:user:" + TEST_SKU_ID, String.valueOf(TEST_USER_ID));
     }
@@ -75,7 +89,7 @@ class PaymentServiceTest {
         paymentService.pay(testOrderId, TEST_USER_ID);
 
         TicketOrder order = ticketOrderMapper.selectById(testOrderId);
-        assertThat(order.getStatus()).isEqualTo(1);
+        assertThat(order.getStatus()).isEqualTo(TicketOrder.STATUS_PAID);
         assertThat(order.getPayTime()).isNotNull();
     }
 
@@ -101,7 +115,7 @@ class PaymentServiceTest {
 
         // 订单状态应变为已取消
         TicketOrder order = ticketOrderMapper.selectById(testOrderId);
-        assertThat(order.getStatus()).isEqualTo(2);
+        assertThat(order.getStatus()).isEqualTo(TicketOrder.STATUS_CANCELED);
         assertThat(order.getCancelTime()).isNotNull();
 
         // Redis 库存应+1（10 → 11）
@@ -132,7 +146,7 @@ class PaymentServiceTest {
         paymentService.cancelTimeoutOrders();
 
         TicketOrder order = ticketOrderMapper.selectById(testOrderId);
-        assertThat(order.getStatus()).isEqualTo(3);
+        assertThat(order.getStatus()).isEqualTo(TicketOrder.STATUS_TIMEOUT);
         assertThat(order.getCancelTime()).isNotNull();
 
         // Redis 库存应+1（10 → 11）
@@ -146,6 +160,79 @@ class PaymentServiceTest {
         paymentService.cancelTimeoutOrders();
 
         TicketOrder order = ticketOrderMapper.selectById(testOrderId);
-        assertThat(order.getStatus()).isEqualTo(0);
+        assertThat(order.getStatus()).isEqualTo(TicketOrder.STATUS_PENDING);
+    }
+
+    @Test
+    void cancel_recordsRollbackTask_whenRedisRollbackFails() {
+        fakeRedisRollbackService.failNextRollback = true;
+
+        paymentService.cancel(testOrderId, TEST_USER_ID);
+
+        TicketOrder order = ticketOrderMapper.selectById(testOrderId);
+        assertThat(order.getStatus()).isEqualTo(TicketOrder.STATUS_CANCELED);
+
+        TicketRollbackTask task = ticketRollbackTaskMapper.selectOne(
+                new LambdaQueryWrapper<TicketRollbackTask>()
+                        .eq(TicketRollbackTask::getOrderId, testOrderId));
+        assertThat(task).isNotNull();
+        assertThat(task.getStatus()).isEqualTo(TicketRollbackTask.STATUS_PENDING);
+        assertThat(task.getRetryCount()).isZero();
+
+        assertThat(redisTemplate.opsForValue().get("ticket:stock:" + TEST_SKU_ID)).isEqualTo("10");
+        assertThat(redisTemplate.opsForSet()
+                .isMember("ticket:order:user:" + TEST_SKU_ID, String.valueOf(TEST_USER_ID))).isTrue();
+    }
+
+    @Test
+    void retryRollbackTasks_marksTaskSuccess_whenRedisRollbackSucceeds() {
+        TicketRollbackTask task = TicketRollbackTask.builder()
+                .orderId(testOrderId)
+                .userId(TEST_USER_ID)
+                .skuId(TEST_SKU_ID)
+                .status(TicketRollbackTask.STATUS_PENDING)
+                .retryCount(0)
+                .errorMessage("previous failure")
+                .build();
+        ticketRollbackTaskMapper.insert(task);
+
+        paymentService.retryRollbackTasks();
+
+        TicketRollbackTask updated = ticketRollbackTaskMapper.selectById(task.getId());
+        assertThat(updated.getStatus()).isEqualTo(TicketRollbackTask.STATUS_SUCCESS);
+        assertThat(updated.getErrorMessage()).isNull();
+        assertThat(redisTemplate.opsForValue().get("ticket:stock:" + TEST_SKU_ID)).isEqualTo("11");
+        assertThat(redisTemplate.opsForSet()
+                .isMember("ticket:order:user:" + TEST_SKU_ID, String.valueOf(TEST_USER_ID))).isFalse();
+    }
+
+    @TestConfiguration
+    static class PaymentServiceTestConfig {
+
+        @Bean
+        @Primary
+        FakeRedisRollbackService fakeRedisRollbackService(StringRedisTemplate redisTemplate) {
+            return new FakeRedisRollbackService(redisTemplate);
+        }
+    }
+
+    static class FakeRedisRollbackService implements RedisRollbackService {
+
+        private final StringRedisTemplate redisTemplate;
+        private boolean failNextRollback;
+
+        FakeRedisRollbackService(StringRedisTemplate redisTemplate) {
+            this.redisTemplate = redisTemplate;
+        }
+
+        @Override
+        public void rollback(Long skuId, Long userId) {
+            if (failNextRollback) {
+                failNextRollback = false;
+                throw new IllegalStateException("rollback failed");
+            }
+            redisTemplate.opsForValue().increment("ticket:stock:" + skuId);
+            redisTemplate.opsForSet().remove("ticket:order:user:" + skuId, String.valueOf(userId));
+        }
     }
 }

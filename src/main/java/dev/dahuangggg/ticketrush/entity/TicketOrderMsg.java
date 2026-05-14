@@ -27,6 +27,10 @@ import java.time.LocalDateTime;
 @TableName("tb_ticket_order_msg")
 public class TicketOrderMsg {
 
+    public static final int STATUS_PENDING = 0;
+    public static final int STATUS_SUCCESS = 1;
+    public static final int STATUS_FAILED = 2;
+
     /**
      * 主键。
      *

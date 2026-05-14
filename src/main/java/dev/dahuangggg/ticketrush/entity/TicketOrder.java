@@ -26,6 +26,11 @@ import java.time.LocalDateTime;
 @TableName("tb_ticket_order")
 public class TicketOrder {
 
+    public static final int STATUS_PENDING = 0;
+    public static final int STATUS_PAID = 1;
+    public static final int STATUS_CANCELED = 2;
+    public static final int STATUS_TIMEOUT = 3;
+
     /**
      * 订单主键。
      *

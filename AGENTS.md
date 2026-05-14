@@ -278,7 +278,7 @@ Responsibilities:
 API:
 
 ```text
-POST /api/admin/skus/{skuId}/init-stock    -- No auth required (admin path whitelisted for now)
+POST /api/admin/skus/{skuId}/init-stock    -- Requires Bearer token (JWT); no admin-role check yet
 ```
 
 Response:
@@ -293,7 +293,7 @@ Notes:
 - Redis key: `ticket:stock:{skuId}` (plain integer string, compatible with `DECR` in Module 5 Lua script).
 - `StockInitServiceImpl` depends on `TicketSkuMapper` directly (not `TicketSkuService`) to avoid circular dependency.
 - `Boolean.TRUE.equals(set)` is used for null-safe check on `setIfAbsent` return value (can return null in cluster pipeline).
-- `/api/admin/**` is JWT-whitelisted for now; admin-role restriction to be added in a future module.
+- `/api/admin/**` requires a valid Bearer token; admin-role restriction to be added in a future module.
 
 Error codes:
 
@@ -366,20 +366,24 @@ Request body:
 
 Notes:
 
+- **Pre-Lua SKU validation**: before executing the Lua script, `TicketRushServiceImpl` loads the SKU from MySQL and checks: SKU exists, `eventId` matches, `status = STATUS_ON_SALE (1)`, and current time is within `[sale_start_time, sale_end_time]`. Any failure throws `TicketSkuUnavailableException` without touching Redis.
 - Lua script loaded via `DefaultRedisScript<Long>` from `classpath:lua/ticket_rush.lua`; Spring Data Redis auto-caches SHA after first `EVAL` (subsequent calls use `EVALSHA`).
 - `Long.valueOf(1L).equals(result)` used for null-safe Lua result comparison (result can be null in cluster pipeline scenarios).
 - `ticket:order:user:{skuId}` Set has **no TTL** — Module 7 cancel/timeout rollback must call `SREM` to remove userId, otherwise user can never re-rush the same SKU after cancellation.
 - Kafka topic: `ticket.rush.requests`; partition key: `userId-skuId` (same user+SKU always hits the same partition for ordered processing).
+- `kafkaTemplate.send(...).get(3, TimeUnit.SECONDS)` — the producer **waits for Kafka ack** (3 s timeout). On failure it throws `KafkaPublishException`. The service then immediately calls `redisRollbackService.rollback(skuId, userId)` via `ticket_rollback.lua` to restore stock and remove the user from the purchased set before re-throwing.
 - `TicketRushMessage` carries `messageId` (UUID) for order consumer idempotency in Module 6.
 - `quantity` is validated `@Min(1) @Max(1)` in `TicketRushRequest`; current flow only supports one ticket per rush.
 - `userId` is read from `UserContext` (set by JWT interceptor) — never trusted from the request body.
+- `TicketRushServiceImpl` delegates Redis rollback to the shared `RedisRollbackService` (injected via constructor); it does **not** hold its own `rollbackScript`.
 
 Error codes:
 
 ```text
-SOLD_OUT          400   -- stock <= 0 or stock key not initialized
-DUPLICATE_ORDER   400   -- userId already in ticket:order:user:{skuId}
-UNAUTHORIZED      401   -- missing or invalid JWT
+SOLD_OUT                400   -- stock <= 0 or stock key not initialized
+DUPLICATE_ORDER         400   -- userId already in ticket:order:user:{skuId}
+TICKET_SKU_UNAVAILABLE  400   -- SKU not found, wrong eventId, not on sale, or outside sale window
+UNAUTHORIZED            401   -- missing or invalid JWT
 ```
 
 ### 6. Order Module ✅ Done
@@ -423,7 +427,9 @@ tb_ticket_order
 - update_time    DATETIME
 
 unique key uk_order_no(order_no)
-unique key uk_user_sku(user_id, sku_id)  -- final idempotency guard
+-- active_status is a generated column: maps status 0/1 → itself, 2/3 → NULL
+-- unique key uk_user_sku_active_status(user_id, sku_id, active_status) -- final idempotency guard
+-- NULL values are not considered equal by MySQL unique index, so canceled/timeout rows never block a re-rush
 
 tb_ticket_order_msg
 - id             BIGINT
@@ -450,11 +456,13 @@ GET /api/orders/me                -- Requires Bearer token; returns all orders d
 Notes:
 
 - `TicketRushConsumer` is a thin `@KafkaListener` wrapper; all business logic is in `OrderServiceImpl`.
-- Idempotency has two layers: ① `tb_ticket_order_msg.message_id` unique index (primary gate); ② `uk_user_sku(user_id, sku_id)` on `tb_ticket_order` (final backstop, should never fire given upstream Lua guarantee).
-- Null guard: if `ticketSkuMapper.selectById(skuId)` returns null, message is marked `status=2` (failed) and skipped — avoids NPE and infinite Kafka retry.
-- Known limitation: if `uk_user_sku` fires (Lua script bug), the whole transaction rolls back including the `tb_ticket_order_msg` INSERT, causing an infinite Kafka retry loop. Production fix: use `REQUIRES_NEW` propagation for the msg INSERT so it commits independently.
+- Idempotency has two layers: ① `tb_ticket_order_msg.message_id` unique index (primary gate); ② `uk_user_sku_active_status(user_id, sku_id, active_status)` on `tb_ticket_order` (final backstop, should never fire given upstream Lua guarantee).
+- `active_status` is a generated column (`STORED`): `CASE WHEN status IN (0,1) THEN status ELSE NULL END`. MySQL unique index ignores NULLs, so canceled/timeout orders do not block a re-rush for the same user+SKU.
+- Null guard: if `ticketSkuMapper.selectById(skuId)` returns null, message is marked `STATUS_FAILED` and skipped — avoids NPE and infinite Kafka retry.
+- Known limitation: if `uk_user_sku_active_status` fires (Lua script bug), the whole transaction rolls back including the `tb_ticket_order_msg` INSERT, causing an infinite Kafka retry loop. Production fix: use `REQUIRES_NEW` propagation for the msg INSERT so it commits independently.
 - `JsonProcessingException` from Kafka is caught and logged (not rethrown) — message is skipped. All other exceptions propagate to trigger Kafka retry.
 - `userId` ownership is enforced at service layer: `getById` and `getByOrderNo` throw `OrderNotFoundException` if order belongs to a different user.
+- Status constants (`STATUS_PENDING`, `STATUS_SUCCESS`, `STATUS_FAILED`) are defined on `TicketOrderMsg`. Use them — no magic numbers.
 
 Error codes:
 
@@ -494,10 +502,15 @@ POST /api/orders/{orderId}/cancel  -- 204 on success; 400 ORDER_NOT_PENDING if n
 Notes:
 
 - `@EnableScheduling` is provided by `SchedulingConfig`.
-- `cancelTimeoutOrders()` is `@Scheduled(fixedDelay=60_000)` and also directly callable in tests.
+- `cancelTimeoutOrders()` is `@Scheduled(fixedDelay=60_000)` and also directly callable in tests. It uses CAS (`WHERE status=0`) so only the first node to win the CAS rolls back Redis — safe under multi-instance deployment.
+- `retryRollbackTasks()` is `@Scheduled(fixedDelay=30_000)`. In multi-instance deployments, it acquires a Redisson distributed lock (`lock:ticket:rollback:retry`) before processing to avoid duplicate INCR on Redis stock. If `RedissonClient` is not available (e.g. `ticket-rush.redisson.enabled=false`), the lock is skipped — acceptable for single-instance setups.
+- Redis rollback is delegated to `RedisRollbackService` (interface). Production implementation: `LuaRedisRollbackService` (executes `ticket_rollback.lua`). Test implementation: `FakeRedisRollbackService` (in-memory). Always inject the interface, never the concrete class.
+- `LuaRedisRollbackService.rollback()` throws `IllegalStateException` if `redisTemplate.execute()` returns null (connection issue) — this ensures `tryRollbackOrRecord` catches it and writes a compensation task.
+- If Redis rollback fails after DB status update, a `tb_ticket_rollback_task` record is written (status=PENDING). `retryRollbackTasks` retries up to 10 times; after that, status is set to FAILED for manual intervention.
 - userId is read from `UserContext` (JWT interceptor) — never from request params.
 - Ownership check: returns `404 ORDER_NOT_FOUND` for both non-existent and other-user orders.
 - MySQL stock is NOT rolled back — Redis counter is the authoritative source (consistent with Module 6).
+- Status constants (`STATUS_PENDING`, `STATUS_PAID`, `STATUS_CANCELED`, `STATUS_TIMEOUT`) are defined on `TicketOrder`. Use them — no magic numbers.
 
 Error codes:
 
@@ -567,9 +580,10 @@ tb_ticket_order   ✅ Done
 Add these only when the core flow needs them:
 
 ```text
-tb_ticket_order_msg    ✅ Done (Kafka message idempotency/failure tracking)
-tb_ai_chat_session     -- AI chat session history
-tb_ticket_rule_doc     -- RAG document metadata
+tb_ticket_order_msg       ✅ Done (Kafka message idempotency/failure tracking)
+tb_ticket_rollback_task   ✅ Done (Redis rollback compensation, retried by scheduled job)
+tb_ai_chat_session        -- AI chat session history
+tb_ticket_rule_doc        -- RAG document metadata
 ```
 
 ## Core Rush Flow
@@ -590,7 +604,7 @@ flowchart TD
 
 - Keep the first version simple. Finish modules 1-7 before expanding AI/RAG.
 - The rush request endpoint must return quickly after Redis Lua succeeds and the Kafka message is sent.
-- Database order creation must be idempotent. Use `uk_user_sku(user_id, sku_id)` as the final guard.
+- Database order creation must be idempotent. `uk_user_sku_active_status(user_id, sku_id, active_status)` is the final guard — `active_status` is a generated column that maps canceled/timeout rows to NULL so they do not block a re-rush.
 - Do not trust Redis alone for final persistence. The order consumer must still verify database state.
 - Do not let AI tools mutate inventory directly. AI must call `create_ticket_order_request`.
 - Use cents for all money fields.

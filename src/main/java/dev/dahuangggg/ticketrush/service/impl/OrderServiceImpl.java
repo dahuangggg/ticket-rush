@@ -51,7 +51,7 @@ public class OrderServiceImpl implements OrderService {
                 .eventId(message.eventId())
                 .skuId(message.skuId())
                 .quantity(message.quantity())
-                .status(0)
+                .status(TicketOrderMsg.STATUS_PENDING)
                 .build();
         try {
             ticketOrderMsgMapper.insert(orderMsg);
@@ -66,7 +66,7 @@ public class OrderServiceImpl implements OrderService {
             // 票档不存在时，将消息标记为失败，避免 Kafka 因异常无限重试
             log.error("票档不存在，跳过创单: skuId={}", message.skuId());
             ticketOrderMsgMapper.updateById(
-                    TicketOrderMsg.builder().id(orderMsg.getId()).status(2)
+                    TicketOrderMsg.builder().id(orderMsg.getId()).status(TicketOrderMsg.STATUS_FAILED)
                             .errorMessage("票档不存在: " + message.skuId()).build()
             );
             return;
@@ -81,7 +81,7 @@ public class OrderServiceImpl implements OrderService {
                 .skuId(message.skuId())
                 .quantity(message.quantity())
                 .totalAmount(totalAmount)
-                .status(0)
+                .status(TicketOrder.STATUS_PENDING)
                 .build();
         // 上游 Lua 脚本已通过 SADD ticket:order:user:{skuId} 保证同一 (userId, skuId) 只发送一条消息，
         // uk_user_sku 唯一键在正常流程下不会冲突，此处作为最终兜底。
@@ -93,7 +93,7 @@ public class OrderServiceImpl implements OrderService {
 
         // 标记消息处理成功（updateById 仅更新非 null 字段，其余字段保持不变）
         ticketOrderMsgMapper.updateById(
-                TicketOrderMsg.builder().id(orderMsg.getId()).status(1).build()
+                TicketOrderMsg.builder().id(orderMsg.getId()).status(TicketOrderMsg.STATUS_SUCCESS).build()
         );
         log.info("订单创建成功: orderId={} userId={} skuId={}", order.getId(), message.userId(), message.skuId());
     }
