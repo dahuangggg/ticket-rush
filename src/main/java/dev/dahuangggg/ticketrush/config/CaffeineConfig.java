@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -39,23 +40,24 @@ public class CaffeineConfig {
      *
      * key: eventId, value: JSON 字符串（与 Redis 保持相同格式，避免二次序列化）
      */
+    /**
+     * maximumSize=0 时 Caffeine 立即驱逐所有条目，相当于禁用本地缓存。
+     * bench-db 和 bench-redis profile 通过设置 ticket-rush.cache.caffeine-max-size=0 来禁用。
+     */
     @Bean
-    public Cache<Long, String> eventDetailLocalCache() {
+    public Cache<Long, String> eventDetailLocalCache(
+            @Value("${ticket-rush.cache.caffeine-max-size:1000}") int maxSize) {
         return Caffeine.newBuilder()
-                .maximumSize(1000)
+                .maximumSize(maxSize)
                 .expireAfterWrite(Duration.ofSeconds(30))
                 .build();
     }
 
-    /**
-     * 活动列表本地缓存。
-     *
-     * key: cacheKey（由查询参数拼接），value: JSON 字符串。
-     */
     @Bean
-    public Cache<String, String> eventListLocalCache() {
+    public Cache<String, String> eventListLocalCache(
+            @Value("${ticket-rush.cache.caffeine-max-size:100}") int maxSize) {
         return Caffeine.newBuilder()
-                .maximumSize(100)
+                .maximumSize(maxSize)
                 .expireAfterWrite(Duration.ofSeconds(30))
                 .build();
     }

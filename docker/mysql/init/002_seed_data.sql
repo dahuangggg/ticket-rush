@@ -10,11 +10,11 @@ ON DUPLICATE KEY UPDATE
     update_time = VALUES(update_time);
 
 INSERT INTO tb_event (
-    id, title, artist, city, venue, event_time, cover_url, description, status, create_time, update_time
+    id, title, artist, city, venue, event_time, cover_url, description, status, is_hot, create_time, update_time
 ) VALUES
-(2001, '周杰伦2026世界巡回演唱会上海站', '周杰伦', '上海', '梅赛德斯奔驰文化中心', '2026-07-18 19:30:00', 'https://example.com/covers/jay-shanghai-2026.jpg', '热门巡演上海站，支持多票档抢票。', 1, '2026-05-13 10:20:00', '2026-05-13 10:20:00'),
-(2002, '林俊杰JJ20世界巡回演唱会北京站', '林俊杰', '北京', '国家体育馆', '2026-08-08 19:30:00', 'https://example.com/covers/jj-beijing-2026.jpg', '北京站限量开售，实名制入场。', 1, '2026-05-13 10:25:00', '2026-05-13 10:25:00'),
-(2003, '五月天回到那一天巡回演唱会广州站', '五月天', '广州', '广州宝能观致文化中心', '2026-09-12 20:00:00', 'https://example.com/covers/mayday-guangzhou-2026.jpg', '广州站预热中，开售前可查看票档。', 0, '2026-05-13 10:30:00', '2026-05-13 10:30:00')
+(2001, '周杰伦2026世界巡回演唱会上海站', '周杰伦', '上海', '梅赛德斯奔驰文化中心', '2026-07-18 19:30:00', 'https://example.com/covers/jay-shanghai-2026.jpg', '热门巡演上海站，支持多票档抢票。', 1, 1, '2026-05-13 10:20:00', '2026-05-13 10:20:00'),
+(2002, '林俊杰JJ20世界巡回演唱会北京站', '林俊杰', '北京', '国家体育馆', '2026-08-08 19:30:00', 'https://example.com/covers/jj-beijing-2026.jpg', '北京站限量开售，实名制入场。', 1, 0, '2026-05-13 10:25:00', '2026-05-13 10:25:00'),
+(2003, '五月天回到那一天巡回演唱会广州站', '五月天', '广州', '广州宝能观致文化中心', '2026-09-12 20:00:00', 'https://example.com/covers/mayday-guangzhou-2026.jpg', '广州站预热中，开售前可查看票档。', 0, 0, '2026-05-13 10:30:00', '2026-05-13 10:30:00')
 ON DUPLICATE KEY UPDATE
     title = VALUES(title),
     artist = VALUES(artist),
@@ -24,6 +24,7 @@ ON DUPLICATE KEY UPDATE
     cover_url = VALUES(cover_url),
     description = VALUES(description),
     status = VALUES(status),
+    is_hot = VALUES(is_hot),
     update_time = VALUES(update_time);
 
 INSERT INTO tb_ticket_sku (

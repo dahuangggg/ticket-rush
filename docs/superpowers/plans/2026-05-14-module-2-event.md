@@ -15,28 +15,31 @@
 ```
 新建：
 src/main/resources/db/V2__create_tb_event.sql
+docker/mysql/init/001_schema.sql              -- tb_event DDL 同步写入（实际迁移机制）
 src/main/java/.../entity/Event.java
 src/main/java/.../mapper/EventMapper.java
 src/main/java/.../dto/event/EventDTO.java
 src/main/java/.../dto/event/EventDetailDTO.java
 src/main/java/.../dto/event/EventListRequest.java
 src/main/java/.../exception/EventNotFoundException.java
-src/main/java/.../config/CaffeineConfig.java
-src/main/java/.../cache/LogicalExpireValue.java
-src/main/java/.../cache/EventCacheManager.java
+src/main/java/.../config/CaffeineConfig.java  -- 含 ObjectMapper @Bean
+src/main/java/.../infrastructure/cache/LogicalExpireValue.java
+src/main/java/.../infrastructure/cache/EventCacheManager.java
 src/main/java/.../service/BloomFilterService.java
-src/main/java/.../service/impl/BloomFilterServiceImpl.java
+src/main/java/.../service/impl/BloomFilterServiceImpl.java  -- @ConditionalOnProperty(havingValue="true")
+src/main/java/.../service/impl/NoOpBloomFilterService.java  -- @ConditionalOnProperty(matchIfMissing=true)
 src/main/java/.../service/EventService.java
 src/main/java/.../service/impl/EventServiceImpl.java
-src/main/java/.../kafka/EventCacheInvalidateMessage.java
-src/main/java/.../kafka/EventCacheInvalidationProducer.java
-src/main/java/.../kafka/EventCacheInvalidationConsumer.java
+src/main/java/.../infrastructure/mq/EventCacheInvalidateMessage.java
+src/main/java/.../infrastructure/mq/EventCacheInvalidationProducer.java
+src/main/java/.../infrastructure/mq/EventCacheInvalidationConsumer.java
 src/main/java/.../controller/EventController.java
 src/test/java/.../controller/EventControllerTest.java
 
 修改：
 pom.xml                          -- 新增 Caffeine 依赖
-src/main/resources/application-dev.yaml  -- 新增 Kafka topic 配置
+src/main/resources/application-dev.yaml  -- 新增 spring.kafka.admin.auto-create: true
+src/main/java/.../config/WebMvcConfig.java   -- /api/events 和 /api/events/** 加入 JWT 白名单
 src/main/java/.../exception/GlobalExceptionHandler.java  -- 新增 EventNotFoundException handler
 ```
 
@@ -80,7 +83,7 @@ CREATE TABLE tb_event
     create_time DATETIME     NOT NULL COMMENT '创建时间，自动填充',
     update_time DATETIME     NOT NULL COMMENT '更新时间，自动填充',
     PRIMARY KEY (id),
-    INDEX idx_city_status (city, status) COMMENT '按城市和状态过滤',
+    INDEX idx_status_city (status, city) COMMENT '按状态和城市过滤（status 选择性更高，放首位）',
     INDEX idx_event_time (event_time) COMMENT '按日期过滤'
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4 COMMENT ='活动表';
@@ -157,9 +160,8 @@ package dev.dahuangggg.ticketrush.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import dev.dahuangggg.ticketrush.entity.Event;
-import org.apache.ibatis.annotations.Mapper;
 
-@Mapper
+// 不加 @Mapper，依赖 @MapperScan 全局扫描（与 UserMapper 保持一致）
 public interface EventMapper extends BaseMapper<Event> {
 }
 ```
@@ -310,7 +312,7 @@ git commit -m "feat: add event DTOs, EventNotFoundException, and 404 handler"
 **Files:**
 - Modify: `pom.xml`
 - Create: `src/main/java/dev/dahuangggg/ticketrush/config/CaffeineConfig.java`
-- Create: `src/main/java/dev/dahuangggg/ticketrush/cache/LogicalExpireValue.java`
+- Create: `src/main/java/dev/dahuangggg/ticketrush/infrastructure/cache/LogicalExpireValue.java`
 
 - [ ] **Step 1: 在 pom.xml 中添加 Caffeine 依赖**
 
@@ -326,7 +328,7 @@ git commit -m "feat: add event DTOs, EventNotFoundException, and 404 handler"
 - [ ] **Step 2: 创建 LogicalExpireValue（逻辑过期包装类）**
 
 ```java
-package dev.dahuangggg.ticketrush.cache;
+package dev.dahuangggg.ticketrush.infrastructure.cache;
 
 import java.time.LocalDateTime;
 
@@ -389,6 +391,21 @@ public class CaffeineConfig {
                 .expireAfterWrite(Duration.ofSeconds(30))
                 .build();
     }
+
+    /**
+     * 注册 ObjectMapper，确保 EventCacheManager 能正确注入。
+     *
+     * Spring Boot 4 不再自动注册 Jackson2 ObjectMapper bean，需显式声明。
+     * 必须禁用 FAIL_ON_UNKNOWN_PROPERTIES，否则反序列化旧版本 JSON 会抛异常。
+     */
+    @Bean
+    public com.fasterxml.jackson.databind.ObjectMapper objectMapper() {
+        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        mapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
+        mapper.disable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        mapper.disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        return mapper;
+    }
 }
 ```
 
@@ -404,7 +421,7 @@ Expected: 无输出（编译成功）
 
 ```bash
 git add pom.xml \
-        src/main/java/dev/dahuangggg/ticketrush/cache/LogicalExpireValue.java \
+        src/main/java/dev/dahuangggg/ticketrush/infrastructure/cache/LogicalExpireValue.java \
         src/main/java/dev/dahuangggg/ticketrush/config/CaffeineConfig.java
 git commit -m "feat: add Caffeine dependency, local cache config, and LogicalExpireValue"
 ```
@@ -416,6 +433,7 @@ git commit -m "feat: add Caffeine dependency, local cache config, and LogicalExp
 **Files:**
 - Create: `src/main/java/dev/dahuangggg/ticketrush/service/BloomFilterService.java`
 - Create: `src/main/java/dev/dahuangggg/ticketrush/service/impl/BloomFilterServiceImpl.java`
+- Create: `src/main/java/dev/dahuangggg/ticketrush/service/impl/NoOpBloomFilterService.java`
 
 - [ ] **Step 1: 创建 BloomFilterService 接口**
 
@@ -469,7 +487,10 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+// 仅在 ticket-rush.redisson.enabled=true 时生效；Redisson 禁用时由 NoOpBloomFilterService 兜底
 @Service
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+        name = "ticket-rush.redisson.enabled", havingValue = "true")
 public class BloomFilterServiceImpl implements BloomFilterService {
 
     private static final Logger log = LoggerFactory.getLogger(BloomFilterServiceImpl.class);
@@ -524,7 +545,40 @@ public class BloomFilterServiceImpl implements BloomFilterService {
 }
 ```
 
-- [ ] **Step 3: 编译确认**
+- [ ] **Step 3: 创建 NoOpBloomFilterService（Redisson 禁用时的回退实现）**
+
+```java
+package dev.dahuangggg.ticketrush.service.impl;
+
+import dev.dahuangggg.ticketrush.service.BloomFilterService;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Service;
+
+/**
+ * 布隆过滤器空实现。
+ *
+ * 当 ticket-rush.redisson.enabled=false 或未配置时激活。
+ * mightExist 始终返回 true（所有 ID 都放行），add 是空操作。
+ * 这样即使不启用 Redisson，EventServiceImpl 仍能通过构造注入拿到合法的 bean，
+ * 缓存穿透防护退化为仅依赖空值缓存，功能正确但防护减弱。
+ */
+@Service
+@ConditionalOnProperty(name = "ticket-rush.redisson.enabled",
+        havingValue = "false", matchIfMissing = true)
+public class NoOpBloomFilterService implements BloomFilterService {
+
+    @Override
+    public boolean mightExist(Long eventId) {
+        return true;
+    }
+
+    @Override
+    public void add(Long eventId) {
+    }
+}
+```
+
+- [ ] **Step 4: 编译确认**
 
 ```bash
 ./mvnw compile -q
@@ -532,11 +586,12 @@ public class BloomFilterServiceImpl implements BloomFilterService {
 
 Expected: 无输出
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/main/java/dev/dahuangggg/ticketrush/service/BloomFilterService.java \
-        src/main/java/dev/dahuangggg/ticketrush/service/impl/BloomFilterServiceImpl.java
+        src/main/java/dev/dahuangggg/ticketrush/service/impl/BloomFilterServiceImpl.java \
+        src/main/java/dev/dahuangggg/ticketrush/service/impl/NoOpBloomFilterService.java
 git commit -m "feat: add BloomFilterService with startup initialization"
 ```
 
@@ -545,12 +600,12 @@ git commit -m "feat: add BloomFilterService with startup initialization"
 ## Task 6: EventCacheManager
 
 **Files:**
-- Create: `src/main/java/dev/dahuangggg/ticketrush/cache/EventCacheManager.java`
+- Create: `src/main/java/dev/dahuangggg/ticketrush/infrastructure/cache/EventCacheManager.java`
 
 - [ ] **Step 1: 创建 EventCacheManager**
 
 ```java
-package dev.dahuangggg.ticketrush.cache;
+package dev.dahuangggg.ticketrush.infrastructure.cache;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -578,6 +633,7 @@ public class EventCacheManager {
     /*
      * 异步重建执行器：热点活动缓存逻辑过期后，由此线程池异步重建，
      * 不阻塞正在进行的用户请求（返回旧数据，后台更新缓存）。
+     * 使用有界线程池，避免高并发场景下无限创建线程。
      */
     private static final ExecutorService REBUILD_EXECUTOR = Executors.newFixedThreadPool(4);
 
@@ -661,6 +717,12 @@ public class EventCacheManager {
 
             if (Boolean.TRUE.equals(locked)) {
                 try {
+                    // double-check：获锁后先再查一次 Redis，防止重复重建
+                    String doubleCheckJson = redisTemplate.opsForValue().get(DETAIL_KEY + eventId);
+                    if (doubleCheckJson != null) {
+                        eventDetailLocalCache.put(eventId, doubleCheckJson);
+                        return deserialize(doubleCheckJson, EventDetailDTO.class);
+                    }
                     // 获锁成功，查 DB 重建缓存
                     EventDetailDTO dto = dbLoader.get();
                     if (dto != null) {
@@ -786,6 +848,11 @@ public class EventCacheManager {
         eventDetailLocalCache.invalidate(eventId);
     }
 
+    @jakarta.annotation.PreDestroy
+    void shutdownRebuildExecutor() {
+        REBUILD_EXECUTOR.shutdown();
+    }
+
     // ========== 列表缓存 ==========
 
     public List<EventDTO> getEventList(String cacheKey) {
@@ -867,7 +934,7 @@ Expected: 无输出
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/main/java/dev/dahuangggg/ticketrush/cache/EventCacheManager.java
+git add src/main/java/dev/dahuangggg/ticketrush/infrastructure/cache/EventCacheManager.java
 git commit -m "feat: add EventCacheManager with hot/normal cache strategies"
 ```
 
@@ -876,15 +943,15 @@ git commit -m "feat: add EventCacheManager with hot/normal cache strategies"
 ## Task 7: Kafka 缓存失效补偿
 
 **Files:**
-- Create: `src/main/java/dev/dahuangggg/ticketrush/kafka/EventCacheInvalidateMessage.java`
-- Create: `src/main/java/dev/dahuangggg/ticketrush/kafka/EventCacheInvalidationProducer.java`
-- Create: `src/main/java/dev/dahuangggg/ticketrush/kafka/EventCacheInvalidationConsumer.java`
+- Create: `src/main/java/dev/dahuangggg/ticketrush/infrastructure/mq/EventCacheInvalidateMessage.java`
+- Create: `src/main/java/dev/dahuangggg/ticketrush/infrastructure/mq/EventCacheInvalidationProducer.java`
+- Create: `src/main/java/dev/dahuangggg/ticketrush/infrastructure/mq/EventCacheInvalidationConsumer.java`
 - Modify: `src/main/resources/application-dev.yaml`
 
 - [ ] **Step 1: 创建消息 DTO**
 
 ```java
-package dev.dahuangggg.ticketrush.kafka;
+package dev.dahuangggg.ticketrush.infrastructure.mq;
 
 /**
  * 活动缓存失效消息。
@@ -900,7 +967,7 @@ public record EventCacheInvalidateMessage(Long eventId) {
 - [ ] **Step 2: 创建 Kafka Producer**
 
 ```java
-package dev.dahuangggg.ticketrush.kafka;
+package dev.dahuangggg.ticketrush.infrastructure.mq;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -949,11 +1016,11 @@ public class EventCacheInvalidationProducer {
 - [ ] **Step 3: 创建 Kafka Consumer**
 
 ```java
-package dev.dahuangggg.ticketrush.kafka;
+package dev.dahuangggg.ticketrush.infrastructure.mq;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dev.dahuangggg.ticketrush.cache.EventCacheManager;
+import dev.dahuangggg.ticketrush.infrastructure.cache.EventCacheManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -997,9 +1064,9 @@ public class EventCacheInvalidationConsumer {
 }
 ```
 
-- [ ] **Step 4: 在 application-dev.yaml 中声明 Kafka topic**
+- [ ] **Step 4: 在 application-dev.yaml 中开启 Kafka topic 自动创建**
 
-在 `spring.kafka` 配置块末尾追加：
+在 `spring.kafka` 配置块末尾追加（仅此一条，topic name 由 Producer 内部常量管理，不需要写到 YAML）：
 
 ```yaml
 spring:
@@ -1008,15 +1075,6 @@ spring:
     # 新增：
     admin:
       auto-create: true
-```
-
-在 `ticket-rush` 配置块末尾追加：
-
-```yaml
-ticket-rush:
-  kafka:
-    topic:
-      event-cache-invalidate: event.cache.invalidate
 ```
 
 - [ ] **Step 5: 编译确认**
@@ -1030,7 +1088,7 @@ Expected: 无输出
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/main/java/dev/dahuangggg/ticketrush/kafka/ \
+git add src/main/java/dev/dahuangggg/ticketrush/infrastructure/mq/ \
         src/main/resources/application-dev.yaml
 git commit -m "feat: add Kafka cache invalidation producer and consumer"
 ```
@@ -1066,6 +1124,11 @@ public interface EventService {
      * 查询活动详情，包含完整的缓存策略（布隆过滤器、热点/普通路由、穿透防护）。
      */
     EventDetailDTO getEventDetail(Long eventId);
+
+    /**
+     * 更新活动后同步删除缓存，失败则发送 Kafka 消息异步兜底。
+     */
+    void invalidateCache(Long eventId);
 }
 ```
 
@@ -1075,13 +1138,13 @@ public interface EventService {
 package dev.dahuangggg.ticketrush.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import dev.dahuangggg.ticketrush.cache.EventCacheManager;
+import dev.dahuangggg.ticketrush.infrastructure.cache.EventCacheManager;
 import dev.dahuangggg.ticketrush.dto.event.EventDetailDTO;
 import dev.dahuangggg.ticketrush.dto.event.EventDTO;
 import dev.dahuangggg.ticketrush.dto.event.EventListRequest;
 import dev.dahuangggg.ticketrush.entity.Event;
 import dev.dahuangggg.ticketrush.exception.EventNotFoundException;
-import dev.dahuangggg.ticketrush.kafka.EventCacheInvalidationProducer;
+import dev.dahuangggg.ticketrush.infrastructure.mq.EventCacheInvalidationProducer;
 import dev.dahuangggg.ticketrush.mapper.EventMapper;
 import dev.dahuangggg.ticketrush.service.BloomFilterService;
 import dev.dahuangggg.ticketrush.service.EventService;
@@ -1093,11 +1156,25 @@ import org.springframework.util.StringUtils;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class EventServiceImpl implements EventService {
 
     private static final Logger log = LoggerFactory.getLogger(EventServiceImpl.class);
+
+    /*
+     * 访问量统计线程池：有界，避免高并发下无限创建线程。
+     * daemon=true 保证 JVM 正常退出。
+     */
+    private static final ExecutorService ACCESS_TRACKER_EXECUTOR =
+            Executors.newFixedThreadPool(2, r -> {
+                Thread t = new Thread(r, "access-tracker");
+                t.setDaemon(true);
+                return t;
+            });
 
     /*
      * 动态热点检测阈值：1 分钟内访问量超过此值，触发缓存预热并告警。
@@ -1109,37 +1186,26 @@ public class EventServiceImpl implements EventService {
 
     private final EventMapper eventMapper;
     private final EventCacheManager cacheManager;
-    private final BloomFilterService bloomFilterService;
     private final EventCacheInvalidationProducer cacheInvalidationProducer;
     private final StringRedisTemplate redisTemplate;
+    private final BloomFilterService bloomFilterService;
 
     public EventServiceImpl(EventMapper eventMapper,
                             EventCacheManager cacheManager,
-                            BloomFilterService bloomFilterService,
                             EventCacheInvalidationProducer cacheInvalidationProducer,
-                            StringRedisTemplate redisTemplate) {
+                            StringRedisTemplate redisTemplate,
+                            BloomFilterService bloomFilterService) {
         this.eventMapper = eventMapper;
         this.cacheManager = cacheManager;
-        this.bloomFilterService = bloomFilterService;
         this.cacheInvalidationProducer = cacheInvalidationProducer;
         this.redisTemplate = redisTemplate;
+        this.bloomFilterService = bloomFilterService;
     }
 
-    /**
-     * 查询活动列表。
-     *
-     * 缓存策略：
-     * - city + date 组合作为缓存 key，命中直接返回。
-     * - keyword 不参与缓存 key，每次透传到 DB（模糊搜索结果组合太多，不适合缓存）。
-     * - 未命中时查 DB，写入缓存（TTL 加随机抖动防雪崩）。
-     *
-     * 热点活动通过 is_hot 字段在 DB 层 ORDER BY is_hot DESC 置顶。
-     */
     @Override
     public List<EventDTO> listEvents(EventListRequest request) {
         String cacheKey = buildListCacheKey(request);
 
-        // 有 keyword 时不走缓存（组合太多）
         if (!StringUtils.hasText(request.keyword())) {
             List<EventDTO> cached = cacheManager.getEventList(cacheKey);
             if (cached != null) {
@@ -1157,63 +1223,70 @@ public class EventServiceImpl implements EventService {
     }
 
     /**
-     * 查询活动详情，完整缓存策略。
+     * 查询活动详情，完整缓存策略（缓存优先，不提前查 DB）。
      *
      * 执行顺序：
-     * 1. 布隆过滤器：一定不存在则直接 404，不查缓存和 DB。
-     * 2. 空值缓存：Redis 有空值标记则直接 404（DB 之前已确认不存在）。
-     * 3. 根据 is_hot 选择缓存策略：
-     *    - 热点活动：逻辑过期，未命中时触发预热（冷启动兜底）。
-     *    - 普通活动：Cache-Aside + 互斥锁。
-     * 4. 异步记录访问量，超阈值时触发动态预热告警。
+     * 1. 布隆过滤器：一定不存在则直接 404。
+     * 2. 空值缓存：Redis 有空值标记则直接 404。
+     * 3. 先尝试热点缓存（getHotEventDetail）—— 不查 DB，dbLoader 只在异步重建时被调用。
+     *    命中（含逻辑过期旧数据）则直接返回。
+     * 4. 热点缓存未命中（普通活动或冷启动）→ 走普通缓存（getNormalEventDetail）。
+     *    dbLoader 在未命中时才查 DB；发现 isHot=1 则顺手预热热点缓存。
+     * 5. DB 也不存在 → 缓存空值 → 404。
+     * 6. 异步记录访问量，超阈值时自动预热（运营漏标兜底）。
+     *
+     * 关键点：AtomicReference<Event> 用于跨 lambda 捕获 dbLoader 中的 DB 查询结果，
+     * 使 trackAccessAsync 能拿到 event 对象用于动态热点检测。
      */
     @Override
     public EventDetailDTO getEventDetail(Long eventId) {
-        // 1. 布隆过滤器拦截（一定不存在，无需查 Redis 和 DB）
         if (!bloomFilterService.mightExist(eventId)) {
             throw new EventNotFoundException(eventId);
         }
 
-        // 2. 空值缓存（DB 已确认不存在的 ID）
         if (cacheManager.isNull(eventId)) {
             throw new EventNotFoundException(eventId);
         }
 
-        // 3. 先从 DB 判断 isHot，决定缓存策略
-        //    注意：isHot 可能在缓存中不存在（如首次访问），需查 DB 一次获取路由信息
-        Event eventMeta = eventMapper.selectById(eventId);
+        AtomicReference<Event> loadedEvent = new AtomicReference<>();
 
-        EventDetailDTO result;
+        // 3. 优先尝试热点缓存（不提前查 DB）
+        EventDetailDTO result = cacheManager.getHotEventDetail(eventId, () -> {
+            Event event = eventMapper.selectById(eventId);
+            loadedEvent.set(event);
+            return event != null ? toDetailDTO(event) : null;
+        });
 
-        if (eventMeta != null && Integer.valueOf(1).equals(eventMeta.getIsHot())) {
-            // 热点活动：逻辑过期缓存
-            result = cacheManager.getHotEventDetail(eventId, () -> toDetailDTO(eventMeta));
-            if (result == null) {
-                // 冷启动（缓存未预热），立即预热并返回 DB 数据
-                result = toDetailDTO(eventMeta);
-                cacheManager.warmUp(eventId, result);
+        if (result != null) {
+            trackAccessAsync(eventId, loadedEvent.get());
+            return result;
+        }
+
+        // 4. 热点缓存未命中 → 普通缓存路径
+        result = cacheManager.getNormalEventDetail(eventId, () -> {
+            Event event = eventMapper.selectById(eventId);
+            loadedEvent.set(event);
+            if (event == null) {
+                return null;
             }
-        } else if (eventMeta != null) {
-            // 普通活动：Cache-Aside + 互斥锁
-            result = cacheManager.getNormalEventDetail(eventId, () -> toDetailDTO(eventMeta));
-        } else {
-            // DB 也不存在，缓存空值防止下次穿透
+            if (Integer.valueOf(1).equals(event.getIsHot())) {
+                EventDetailDTO dto = toDetailDTO(event);
+                cacheManager.warmUp(eventId, dto);
+                return dto;
+            }
+            return toDetailDTO(event);
+        });
+
+        if (result == null) {
             cacheManager.cacheNull(eventId);
             throw new EventNotFoundException(eventId);
         }
 
-        // 4. 异步计数，动态热点检测（不阻塞响应）
-        trackAccessAsync(eventId, eventMeta);
-
+        trackAccessAsync(eventId, loadedEvent.get());
         return result;
     }
 
-    /**
-     * 更新活动后同步删除缓存，失败则发送 Kafka 消息异步兜底。
-     *
-     * 调用方（管理后台服务）在更新 DB 后调用此方法。
-     * 活动状态变更（上下架）时必须调用，不能依赖 TTL 自然过期。
-     */
+    @Override
     public void invalidateCache(Long eventId) {
         try {
             cacheManager.invalidate(eventId);
@@ -1227,14 +1300,14 @@ public class EventServiceImpl implements EventService {
 
     private List<EventDTO> queryEventListFromDb(EventListRequest request) {
         LambdaQueryWrapper<Event> wrapper = new LambdaQueryWrapper<Event>()
-                .eq(Event::getStatus, 1)  // 只查售卖中的活动
+                .eq(Event::getStatus, 1)
                 .eq(StringUtils.hasText(request.city()), Event::getCity, request.city())
                 .like(StringUtils.hasText(request.keyword()), Event::getTitle, request.keyword())
                 .ge(request.date() != null, Event::getEventTime,
                         request.date() != null ? request.date().atStartOfDay() : null)
                 .lt(request.date() != null, Event::getEventTime,
                         request.date() != null ? request.date().plusDays(1).atStartOfDay() : null)
-                .orderByDesc(Event::getIsHot)   // 热点活动置顶
+                .orderByDesc(Event::getIsHot)
                 .orderByAsc(Event::getEventTime);
 
         return eventMapper.selectList(wrapper).stream()
@@ -1242,22 +1315,26 @@ public class EventServiceImpl implements EventService {
                 .toList();
     }
 
+    @jakarta.annotation.PreDestroy
+    void shutdownAccessTracker() {
+        ACCESS_TRACKER_EXECUTOR.shutdown();
+    }
+
     private void trackAccessAsync(Long eventId, Event event) {
-        // 访问量统计不能影响主流程，异步执行
-        Thread.ofVirtual().start(() -> {
+        ACCESS_TRACKER_EXECUTOR.submit(() -> {
             try {
                 String key = ACCESS_COUNT_KEY + eventId;
                 Long count = redisTemplate.opsForValue().increment(key);
-                if (count != null && count == 1) {
+                if (count != null && count == 1L) {
                     redisTemplate.expire(key, ACCESS_COUNT_WINDOW);
                 }
                 if (count != null && count >= HOT_DETECT_THRESHOLD
                         && event != null && !Integer.valueOf(1).equals(event.getIsHot())) {
                     log.warn("Dynamic hot event detected: eventId={}, accessCount={} in 1min. "
                             + "Consider marking is_hot=1 in admin console.", eventId, count);
-                    // 自动触发预热，作为运营漏标的兜底
                     cacheManager.warmUp(eventId, toDetailDTO(event));
                 }
+                // event == null means we arrived via the hot-cache path; warm-up already handled
             } catch (Exception e) {
                 log.warn("Access tracking failed for eventId={}", eventId, e);
             }
@@ -1393,6 +1470,10 @@ class EventControllerTest {
                     "上海", "梅赛德斯奔驰文化中心",
                     LocalDateTime.of(2026, 8, 1, 20, 0),
                     "https://example.com/cover.jpg", "演出详情", 1, 1);
+        }
+
+        @Override
+        public void invalidateCache(Long eventId) {
         }
     }
 }

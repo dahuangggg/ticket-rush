@@ -18,8 +18,8 @@ public class TicketSkuController {
     }
 
     /**
-     * Lists all SKUs for an event, ordered by price ascending.
-     * Returns an empty array if the event has no SKUs (not 404).
+     * 查询某个活动下的所有票档，按价格升序排序。
+     * 如果该活动没有票档，返回空数组，不返回 404。
      */
     @GetMapping("/api/events/{eventId}/skus")
     public List<TicketSkuDTO> listByEvent(@PathVariable Long eventId) {
@@ -27,8 +27,8 @@ public class TicketSkuController {
     }
 
     /**
-     * Returns a single SKU by its id.
-     * Returns 404 TICKET_SKU_NOT_FOUND if the id does not exist or is soft-deleted.
+     * 根据票档 ID 查询单个票档详情。
+     * 如果 ID 不存在或已软删除，返回 404 TICKET_SKU_NOT_FOUND。
      */
     @GetMapping("/api/ticket-skus/{skuId}")
     public TicketSkuDTO getSkuDetail(@PathVariable Long skuId) {

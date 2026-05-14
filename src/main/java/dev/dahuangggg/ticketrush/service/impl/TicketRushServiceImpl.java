@@ -18,7 +18,7 @@ import java.util.UUID;
 @Service
 public class TicketRushServiceImpl implements TicketRushService {
 
-    // Redis key 前缀，与 StockInitServiceImpl.STOCK_KEY 和 AGENTS.md 保持一致
+    // Redis key 前缀，与 StockInitServiceImpl.STOCK_KEY 保持一致
     static final String STOCK_KEY_PREFIX      = "ticket:stock:";
     static final String ORDER_USER_KEY_PREFIX = "ticket:order:user:";
 

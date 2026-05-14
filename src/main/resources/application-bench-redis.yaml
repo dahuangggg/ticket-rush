@@ -1,0 +1,6 @@
+# 压测场景二：MySQL + Redis，不走 Caffeine 本地缓存
+# 用法：./mvnw spring-boot:run -Dspring-boot.run.profiles=dev,bench-redis
+ticket-rush:
+  cache:
+    redis-enabled: true
+    caffeine-max-size: 0        # Caffeine 立即驱逐，等效禁用本地缓存
