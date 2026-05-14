@@ -100,6 +100,15 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 处理订单状态不允许操作的情况（如对已支付订单再次支付）。
+     */
+    @ExceptionHandler(OrderNotPendingException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ErrorResponse handleOrderNotPending(OrderNotPendingException exception) {
+        return new ErrorResponse("ORDER_NOT_PENDING", exception.getMessage());
+    }
+
+    /**
      * 处理票档售罄的情况。
      */
     @ExceptionHandler(SoldOutException.class)
