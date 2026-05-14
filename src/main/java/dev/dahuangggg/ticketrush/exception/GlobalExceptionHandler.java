@@ -91,6 +91,15 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 处理订单不存在的情况。
+     */
+    @ExceptionHandler(OrderNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public ErrorResponse handleOrderNotFound(OrderNotFoundException exception) {
+        return new ErrorResponse("ORDER_NOT_FOUND", exception.getMessage());
+    }
+
+    /**
      * 处理票档售罄的情况。
      */
     @ExceptionHandler(SoldOutException.class)
