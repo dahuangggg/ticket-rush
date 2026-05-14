@@ -5,6 +5,7 @@ import dev.dahuangggg.ticketrush.dto.sku.TicketSkuDTO;
 import dev.dahuangggg.ticketrush.entity.TicketSku;
 import dev.dahuangggg.ticketrush.exception.TicketSkuNotFoundException;
 import dev.dahuangggg.ticketrush.mapper.TicketSkuMapper;
+import dev.dahuangggg.ticketrush.service.StockInitService;
 import dev.dahuangggg.ticketrush.service.TicketSkuService;
 import org.springframework.stereotype.Service;
 
@@ -14,9 +15,12 @@ import java.util.List;
 public class TicketSkuServiceImpl implements TicketSkuService {
 
     private final TicketSkuMapper ticketSkuMapper;
+    private final StockInitService stockInitService;
 
-    public TicketSkuServiceImpl(TicketSkuMapper ticketSkuMapper) {
+    public TicketSkuServiceImpl(TicketSkuMapper ticketSkuMapper,
+                                StockInitService stockInitService) {
         this.ticketSkuMapper = ticketSkuMapper;
+        this.stockInitService = stockInitService;
     }
 
     @Override
@@ -39,12 +43,15 @@ public class TicketSkuServiceImpl implements TicketSkuService {
     }
 
     private TicketSkuDTO toDTO(TicketSku sku) {
+        Integer redisStock = stockInitService.getAvailableStock(sku.getId());
+        int stock = redisStock != null ? redisStock : sku.getStock();
+
         return new TicketSkuDTO(
                 sku.getId(),
                 sku.getEventId(),
                 sku.getName(),
                 sku.getPrice(),
-                sku.getStock(),
+                stock,
                 sku.getSaleStartTime(),
                 sku.getSaleEndTime(),
                 sku.getLimitPerUser(),
