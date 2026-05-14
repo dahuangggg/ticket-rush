@@ -1,4 +1,4 @@
-package dev.dahuangggg.ticketrush.kafka;
+package dev.dahuangggg.ticketrush.infrastructure.mq;
 
 /**
  * 活动缓存失效消息。

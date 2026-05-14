@@ -1,13 +1,13 @@
 package dev.dahuangggg.ticketrush.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import dev.dahuangggg.ticketrush.cache.EventCacheManager;
+import dev.dahuangggg.ticketrush.infrastructure.cache.EventCacheManager;
 import dev.dahuangggg.ticketrush.dto.event.EventDetailDTO;
 import dev.dahuangggg.ticketrush.dto.event.EventDTO;
 import dev.dahuangggg.ticketrush.dto.event.EventListRequest;
 import dev.dahuangggg.ticketrush.entity.Event;
 import dev.dahuangggg.ticketrush.exception.EventNotFoundException;
-import dev.dahuangggg.ticketrush.kafka.EventCacheInvalidationProducer;
+import dev.dahuangggg.ticketrush.infrastructure.mq.EventCacheInvalidationProducer;
 import dev.dahuangggg.ticketrush.mapper.EventMapper;
 import dev.dahuangggg.ticketrush.service.BloomFilterService;
 import dev.dahuangggg.ticketrush.service.EventService;

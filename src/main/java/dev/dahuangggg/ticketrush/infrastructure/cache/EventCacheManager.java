@@ -1,4 +1,4 @@
-package dev.dahuangggg.ticketrush.cache;
+package dev.dahuangggg.ticketrush.infrastructure.cache;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;

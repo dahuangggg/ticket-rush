@@ -1,4 +1,4 @@
-package dev.dahuangggg.ticketrush.kafka;
+package dev.dahuangggg.ticketrush.infrastructure.mq;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
