@@ -11,7 +11,9 @@ import dev.dahuangggg.ticketrush.mapper.TicketOrderMapper;
 import dev.dahuangggg.ticketrush.service.PaymentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,11 +34,16 @@ public class PaymentServiceImpl implements PaymentService {
 
     private final TicketOrderMapper ticketOrderMapper;
     private final StringRedisTemplate redisTemplate;
+    private final DefaultRedisScript<Long> rollbackScript;
 
     public PaymentServiceImpl(TicketOrderMapper ticketOrderMapper,
                               StringRedisTemplate redisTemplate) {
         this.ticketOrderMapper = ticketOrderMapper;
         this.redisTemplate = redisTemplate;
+        // 首次 execute 时发送 EVAL，Spring Data Redis 自动缓存 SHA，后续切换为 EVALSHA
+        this.rollbackScript = new DefaultRedisScript<>();
+        this.rollbackScript.setLocation(new ClassPathResource("lua/ticket_rollback.lua"));
+        this.rollbackScript.setResultType(Long.class);
     }
 
     @Override
@@ -122,18 +129,18 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     /**
-     * 回滚 Redis：归还库存计数 + 从用户抢购 Set 中移除，使该用户可以重新抢票。
+     * 原子回滚 Redis：通过 Lua 脚本将 INCR + SREM 合并为单次原子操作，
+     * 避免两条命令之间进程崩溃导致库存与用户集合状态不一致。
      *
-     * 与 TicketRushServiceImpl 中 Lua 脚本操作的 key 对应：
+     * 对应 lua/ticket_rollback.lua：
      *   INCR  ticket:stock:{skuId}
      *   SREM  ticket:order:user:{skuId}  {userId}
-     *
-     * 注意：两条命令非原子操作。若进程在 INCR 成功后、SREM 执行前崩溃，
-     * 库存会被归还但用户仍留在抢购 Set 中，导致该用户无法再次抢票。
-     * 生产环境修复方案：改用 Lua 脚本将 INCR + SREM 合并为原子操作。
      */
     private void rollbackRedis(Long skuId, Long userId) {
-        redisTemplate.opsForValue().increment(STOCK_KEY_PREFIX + skuId);
-        redisTemplate.opsForSet().remove(ORDER_USER_KEY_PREFIX + skuId, String.valueOf(userId));
+        List<String> keys = List.of(
+                STOCK_KEY_PREFIX + skuId,
+                ORDER_USER_KEY_PREFIX + skuId
+        );
+        redisTemplate.execute(rollbackScript, keys, String.valueOf(userId));
     }
 }
