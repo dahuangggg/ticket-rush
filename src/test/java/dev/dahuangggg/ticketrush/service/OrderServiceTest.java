@@ -11,11 +11,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest
 class OrderServiceTest {
@@ -34,6 +38,8 @@ class OrderServiceTest {
 
     // 测试专用 userId（不与种子数据冲突），sku 3001 price=38000，event 2001
     private static final Long TEST_USER_ID  = 99001L;
+    private static final Long CANCELED_RETRY_USER_ID = 99003L;
+    private static final Long DUPLICATE_PENDING_USER_ID = 99004L;
     private static final Long TEST_SKU_ID   = 3001L;
     private static final Long TEST_EVENT_ID = 2001L;
 
@@ -45,12 +51,20 @@ class OrderServiceTest {
         // 物理删除（绕过软删除），保证唯一索引干净，避免测试间干扰
         jdbcTemplate.update("DELETE FROM tb_ticket_order WHERE user_id = ?", TEST_USER_ID);
         jdbcTemplate.update("DELETE FROM tb_ticket_order_msg WHERE user_id = ?", TEST_USER_ID);
+        jdbcTemplate.update("DELETE FROM tb_ticket_order WHERE user_id IN (?, ?)",
+                CANCELED_RETRY_USER_ID, DUPLICATE_PENDING_USER_ID);
+        jdbcTemplate.update("DELETE FROM tb_ticket_order_msg WHERE user_id IN (?, ?)",
+                CANCELED_RETRY_USER_ID, DUPLICATE_PENDING_USER_ID);
     }
 
     @AfterEach
     void cleanup() {
         jdbcTemplate.update("DELETE FROM tb_ticket_order WHERE user_id = ?", TEST_USER_ID);
         jdbcTemplate.update("DELETE FROM tb_ticket_order_msg WHERE user_id = ?", TEST_USER_ID);
+        jdbcTemplate.update("DELETE FROM tb_ticket_order WHERE user_id IN (?, ?)",
+                CANCELED_RETRY_USER_ID, DUPLICATE_PENDING_USER_ID);
+        jdbcTemplate.update("DELETE FROM tb_ticket_order_msg WHERE user_id IN (?, ?)",
+                CANCELED_RETRY_USER_ID, DUPLICATE_PENDING_USER_ID);
     }
 
     @Test
@@ -66,7 +80,7 @@ class OrderServiceTest {
                         .eq(TicketOrder::getUserId, TEST_USER_ID)
                         .eq(TicketOrder::getSkuId, TEST_SKU_ID));
         assertThat(order).isNotNull();
-        assertThat(order.getStatus()).isEqualTo(0);
+        assertThat(order.getStatus()).isEqualTo(TicketOrder.STATUS_PENDING);
         assertThat(order.getTotalAmount()).isEqualTo(38000L);
         assertThat(order.getOrderNo()).isNotBlank();
 
@@ -97,7 +111,44 @@ class OrderServiceTest {
         Long msgCount = ticketOrderMsgMapper.selectCount(
                 new LambdaQueryWrapper<TicketOrderMsg>()
                         .eq(TicketOrderMsg::getMessageId, testMessageId)
-                        .eq(TicketOrderMsg::getStatus, 1));
+                        .eq(TicketOrderMsg::getStatus, TicketOrderMsg.STATUS_SUCCESS));
         assertThat(msgCount).isEqualTo(1);
+    }
+
+    @Test
+    void createOrder_allowsNewPendingOrderAfterCanceledOrder() {
+        TicketOrder canceled = TicketOrder.builder()
+                .orderNo(UUID.randomUUID().toString().replace("-", ""))
+                .userId(CANCELED_RETRY_USER_ID)
+                .eventId(TEST_EVENT_ID)
+                .skuId(TEST_SKU_ID)
+                .quantity(1)
+                .totalAmount(38000L)
+                .status(TicketOrder.STATUS_CANCELED)
+                .cancelTime(LocalDateTime.now())
+                .build();
+        ticketOrderMapper.insert(canceled);
+
+        TicketRushMessage message = new TicketRushMessage(
+                UUID.randomUUID().toString(), CANCELED_RETRY_USER_ID, TEST_EVENT_ID, TEST_SKU_ID, 1);
+
+        orderService.createOrder(message);
+
+        List<TicketOrder> orders = ticketOrderMapper.selectList(
+                new LambdaQueryWrapper<TicketOrder>()
+                        .eq(TicketOrder::getUserId, CANCELED_RETRY_USER_ID)
+                        .eq(TicketOrder::getSkuId, TEST_SKU_ID));
+        assertThat(orders).hasSize(2);
+        assertThat(orders).anyMatch(order -> order.getStatus().equals(TicketOrder.STATUS_PENDING));
+    }
+
+    @Test
+    void createOrder_rejectsSecondPendingOrderForSameUserAndSku() {
+        orderService.createOrder(new TicketRushMessage(
+                UUID.randomUUID().toString(), DUPLICATE_PENDING_USER_ID, TEST_EVENT_ID, TEST_SKU_ID, 1));
+
+        assertThatThrownBy(() -> orderService.createOrder(new TicketRushMessage(
+                UUID.randomUUID().toString(), DUPLICATE_PENDING_USER_ID, TEST_EVENT_ID, TEST_SKU_ID, 1)))
+                .isInstanceOf(DuplicateKeyException.class);
     }
 }

@@ -5,6 +5,7 @@ import dev.dahuangggg.ticketrush.dto.rush.TicketRushResponse;
 import dev.dahuangggg.ticketrush.entity.User;
 import dev.dahuangggg.ticketrush.exception.DuplicateOrderException;
 import dev.dahuangggg.ticketrush.exception.SoldOutException;
+import dev.dahuangggg.ticketrush.exception.TicketSkuUnavailableException;
 import dev.dahuangggg.ticketrush.security.JwtTokenService;
 import dev.dahuangggg.ticketrush.service.TicketRushService;
 import org.junit.jupiter.api.BeforeEach;
@@ -89,6 +90,18 @@ class TicketRushControllerTest {
     }
 
     @Test
+    void rush_returns400Unavailable_whenSkuCannotRush() throws Exception {
+        mockMvc.perform(post("/api/ticket-rush/requests")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"eventId":2001,"skuId":3004,"quantity":1}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("TICKET_SKU_UNAVAILABLE"));
+    }
+
+    @Test
     void rush_returns400_whenQuantityExceedsLimit() throws Exception {
         mockMvc.perform(post("/api/ticket-rush/requests")
                         .header("Authorization", "Bearer " + token)
@@ -114,9 +127,10 @@ class TicketRushControllerTest {
 
         @Override
         public TicketRushResponse rush(Long userId, TicketRushRequest request) {
-            // 3002 → 售罄，3003 → 重复，其余 → 成功
+            // 3002 → 售罄，3003 → 重复，3004 → 当前不可抢，其余 → 成功
             if (request.skuId().equals(3002L)) throw new SoldOutException(3002L);
             if (request.skuId().equals(3003L)) throw new DuplicateOrderException(3003L);
+            if (request.skuId().equals(3004L)) throw new TicketSkuUnavailableException(3004L);
             return new TicketRushResponse("QUEUED");
         }
     }

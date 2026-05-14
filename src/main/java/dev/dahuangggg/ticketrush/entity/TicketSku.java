@@ -20,6 +20,10 @@ import java.time.LocalDateTime;
 @TableName("tb_ticket_sku")
 public class TicketSku {
 
+    public static final int STATUS_NOT_STARTED = 0;
+    public static final int STATUS_ON_SALE = 1;
+    public static final int STATUS_SOLD_OUT = 2;
+
     /**
      * 票种 SKU 主键。
      *

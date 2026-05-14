@@ -28,4 +28,9 @@ public interface PaymentService {
      * 由 @Scheduled 每 60 秒调用一次，也可在测试中直接调用。
      */
     void cancelTimeoutOrders();
+
+    /**
+     * 重试 Redis 回滚补偿任务。
+     */
+    void retryRollbackTasks();
 }

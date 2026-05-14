@@ -2,15 +2,17 @@ package dev.dahuangggg.ticketrush.infrastructure.mq;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import dev.dahuangggg.ticketrush.exception.KafkaPublishException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
+
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 @Component
 public class TicketRushProducer {
 
-    private static final Logger log = LoggerFactory.getLogger(TicketRushProducer.class);
     static final String TOPIC = "ticket.rush.requests";
 
     private final KafkaTemplate<String, String> kafkaTemplate;
@@ -32,11 +34,14 @@ public class TicketRushProducer {
         try {
             String json = objectMapper.writeValueAsString(message);
             String partitionKey = message.userId() + "-" + message.skuId();
-            kafkaTemplate.send(TOPIC, partitionKey, json);
+            kafkaTemplate.send(TOPIC, partitionKey, json).get(3, TimeUnit.SECONDS);
         } catch (JsonProcessingException e) {
-            log.error("序列化抢票消息失败 userId={} skuId={}", message.userId(), message.skuId(), e);
-        } catch (Exception e) {
-            log.error("发送抢票消息失败 userId={} skuId={}", message.userId(), message.skuId(), e);
+            throw new KafkaPublishException("序列化抢票消息失败", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new KafkaPublishException("发送抢票消息被中断", e);
+        } catch (ExecutionException | TimeoutException e) {
+            throw new KafkaPublishException("发送抢票消息失败", e);
         }
     }
 }

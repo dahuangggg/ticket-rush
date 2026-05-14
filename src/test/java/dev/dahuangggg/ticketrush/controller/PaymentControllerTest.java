@@ -136,5 +136,8 @@ class PaymentControllerTest {
 
         @Override
         public void cancelTimeoutOrders() {}
+
+        @Override
+        public void retryRollbackTasks() {}
     }
 }
