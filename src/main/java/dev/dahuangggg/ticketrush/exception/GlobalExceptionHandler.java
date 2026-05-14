@@ -91,6 +91,24 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 处理票档售罄的情况。
+     */
+    @ExceptionHandler(SoldOutException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ErrorResponse handleSoldOut(SoldOutException exception) {
+        return new ErrorResponse("SOLD_OUT", exception.getMessage());
+    }
+
+    /**
+     * 处理重复抢票的情况。
+     */
+    @ExceptionHandler(DuplicateOrderException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ErrorResponse handleDuplicateOrder(DuplicateOrderException exception) {
+        return new ErrorResponse("DUPLICATE_ORDER", exception.getMessage());
+    }
+
+    /**
      * 未命中错误处理。
      */
     @ExceptionHandler(Exception.class)
