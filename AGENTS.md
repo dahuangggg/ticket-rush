@@ -31,7 +31,7 @@ The current `pom.xml` already includes Kafka dependencies. Use Kafka for async o
 | 1 | User login and JWT | ✅ Done |
 | 2 | Event list and event detail | ✅ Done |
 | 3 | Ticket SKU query | ✅ Done |
-| 4 | Redis stock initialization | 🔲 Pending |
+| 4 | Redis stock initialization | ✅ Done |
 | 5 | Lua rush eligibility validation | 🔲 Pending |
 | 6 | Async order creation with Kafka | 🔲 Pending |
 | 7 | Order query, simulated payment, and cancel | 🔲 Pending |
@@ -257,7 +257,7 @@ GET /api/ticket-skus/{skuId}      -- No auth required; 404 if not found
 Notes:
 
 - `price` is `BIGINT` in the actual schema (not `INT`), mapped to `Long` in Java.
-- `stock` returns MySQL account stock. Module 4 will switch `TicketSkuServiceImpl.toDTO()` to read from Redis counter `ticket:stock:{skuId}`.
+- `stock` returns the real-time Redis counter `ticket:stock:{skuId}` when initialized (Module 4); falls back to MySQL account stock before initialization.
 - `status=2 sold out` is written back asynchronously by the Kafka consumer in Module 5; there is a brief window of inconsistency.
 - Both endpoints are whitelisted in `WebMvcConfig`: `/api/ticket-skus/**` is explicitly excluded; `/api/events/{id}/skus` is covered by the existing `/api/events/**` exclusion.
 
@@ -267,7 +267,43 @@ Error codes:
 TICKET_SKU_NOT_FOUND   404   -- SKU does not exist or is soft-deleted
 ```
 
-### 4. Ticket Rush Module 🔲 Pending
+### 4. Redis Stock Initialization ✅ Done
+
+Responsibilities:
+
+- Initialize `ticket:stock:{skuId}` in Redis from MySQL account stock before sale starts.
+- Idempotent: calling `initStock` a second time does not overwrite the live counter.
+- After initialization, `GET /api/ticket-skus/{skuId}` and `GET /api/events/{id}/skus` return the Redis real-time stock (falls back to MySQL stock when key absent).
+
+API:
+
+```text
+POST /api/admin/skus/{skuId}/init-stock    -- No auth required (admin path whitelisted for now)
+```
+
+Response:
+
+```json
+{ "initialized": true }   -- 新建计数器
+{ "initialized": false }  -- 计数器已存在，未覆盖
+```
+
+Notes:
+
+- Redis key: `ticket:stock:{skuId}` (plain integer string, compatible with `DECR` in Module 5 Lua script).
+- `StockInitServiceImpl` depends on `TicketSkuMapper` directly (not `TicketSkuService`) to avoid circular dependency.
+- `Boolean.TRUE.equals(set)` is used for null-safe check on `setIfAbsent` return value (can return null in cluster pipeline).
+- `/api/admin/**` is JWT-whitelisted for now; admin-role restriction to be added in a future module.
+
+Error codes:
+
+```text
+TICKET_SKU_NOT_FOUND   404   -- SKU does not exist or is soft-deleted
+```
+
+---
+
+### 5. Ticket Rush Module 🔲 Pending
 
 This is the core module. Use Redis + Lua to implement atomic stock pre-deduction and one-user-one-order validation.
 
@@ -328,7 +364,7 @@ Request body:
 }
 ```
 
-### 5. Order Module 🔲 Pending
+### 6. Order Module 🔲 Pending
 
 Responsibilities:
 
@@ -393,7 +429,7 @@ GET /api/orders/by-no/{orderNo}
 GET /api/orders/me
 ```
 
-### 6. Payment and Cancel Module 🔲 Pending
+### 7. Payment and Cancel Module 🔲 Pending
 
 Start with simulated payment. Do not integrate a real payment provider in the first version.
 

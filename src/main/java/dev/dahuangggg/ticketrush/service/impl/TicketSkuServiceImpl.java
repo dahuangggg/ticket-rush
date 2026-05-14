@@ -43,6 +43,7 @@ public class TicketSkuServiceImpl implements TicketSkuService {
     }
 
     private TicketSkuDTO toDTO(TicketSku sku) {
+        // 优先返回 Redis 实时库存；计数器未初始化时回退到 MySQL 账面库存
         Integer redisStock = stockInitService.getAvailableStock(sku.getId());
         int stock = redisStock != null ? redisStock : sku.getStock();
 

@@ -27,8 +27,10 @@ public class StockInitServiceImpl implements StockInitService {
         if (sku == null) {
             throw new TicketSkuNotFoundException(skuId);
         }
+        // SET NX：key 不存在时才写入，防止抢票进行中被误覆盖
         Boolean set = redisTemplate.opsForValue()
                 .setIfAbsent(STOCK_KEY + skuId, String.valueOf(sku.getStock()));
+        // setIfAbsent 在集群 pipeline 场景下可能返回 null，用 TRUE.equals 做空安全判断
         return Boolean.TRUE.equals(set);
     }
 
