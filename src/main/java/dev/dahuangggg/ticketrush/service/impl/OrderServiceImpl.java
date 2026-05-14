@@ -85,6 +85,10 @@ public class OrderServiceImpl implements OrderService {
                 .build();
         // 上游 Lua 脚本已通过 SADD ticket:order:user:{skuId} 保证同一 (userId, skuId) 只发送一条消息，
         // uk_user_sku 唯一键在正常流程下不会冲突，此处作为最终兜底。
+        // 注意：若此处抛出 DuplicateKeyException，整个事务（含消息追踪记录的 INSERT）将被回滚，
+        // Kafka 会重试该消息，但因消息记录也被回滚，messageId 幂等门卫将在下次重试时再次触发，
+        // 导致无限重试循环。生产环境建议将消息追踪记录的写入改为 REQUIRES_NEW 传播，
+        // 使其在独立事务中提交，确保 messageId 门卫在重试时生效。
         ticketOrderMapper.insert(order);
 
         // 标记消息处理成功（updateById 仅更新非 null 字段，其余字段保持不变）
