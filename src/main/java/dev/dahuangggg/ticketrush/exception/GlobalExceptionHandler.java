@@ -1,6 +1,7 @@
 package dev.dahuangggg.ticketrush.exception;
 
 import dev.dahuangggg.ticketrush.dto.common.ErrorResponse;
+import dev.dahuangggg.ticketrush.exception.TicketSkuNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -70,6 +71,12 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.NOT_FOUND)
     public ErrorResponse handleEventNotFound(EventNotFoundException exception) {
         return new ErrorResponse("EVENT_NOT_FOUND", exception.getMessage());
+    }
+
+    @ExceptionHandler(TicketSkuNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public ErrorResponse handleTicketSkuNotFound(TicketSkuNotFoundException exception) {
+        return new ErrorResponse("TICKET_SKU_NOT_FOUND", exception.getMessage());
     }
 
     /**
