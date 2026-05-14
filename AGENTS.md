@@ -33,7 +33,7 @@ The current `pom.xml` already includes Kafka dependencies. Use Kafka for async o
 | 3 | Ticket SKU query | ✅ Done |
 | 4 | Redis stock initialization | ✅ Done |
 | 5 | Lua rush eligibility validation | ✅ Done |
-| 6 | Async order creation with Kafka | 🔲 Pending |
+| 6 | Async order creation with Kafka | ✅ Done |
 | 7 | Order query, simulated payment, and cancel | 🔲 Pending |
 | 8 | AI function calling | 🔲 Pending |
 | 9 | RAG knowledge base | 🔲 Pending |
@@ -382,13 +382,12 @@ DUPLICATE_ORDER   400   -- userId already in ticket:order:user:{skuId}
 UNAUTHORIZED      401   -- missing or invalid JWT
 ```
 
-### 6. Order Module 🔲 Pending
+### 6. Order Module ✅ Done
 
 Responsibilities:
 
 - Consume rush messages from Kafka asynchronously.
 - Check idempotency before database writes.
-- Deduct MySQL stock.
 - Create pending payment order.
 - Query order status.
 
@@ -396,44 +395,45 @@ Consumer flow:
 
 ```text
 Kafka consumer receives rush message
--> query database to ensure no existing order (idempotency)
--> deduct MySQL stock
--> create order with status=pending
+-> INSERT tb_ticket_order_msg (message_id unique index, idempotency gate)
+   -> DuplicateKeyException → skip (already processed)
+-> SELECT tb_ticket_sku for price
+-> INSERT tb_ticket_order (status=0 待支付, orderNo=UUID)
+-> UPDATE tb_ticket_order_msg status=1 (success)
 ```
 
-Table:
+Note: **MySQL stock (`tb_ticket_sku.stock`) is NOT decremented.** Redis `ticket:stock:{skuId}` is the authoritative real-time counter. MySQL stock remains the initial configured capacity used to seed Redis; actual sold quantity is derived from `tb_ticket_order` count.
+
+Tables:
 
 ```sql
 tb_ticket_order
 - id             BIGINT
-- order_no       VARCHAR(64)     -- unique business order number
+- order_no       VARCHAR(64)     -- UUID (32 hex chars), unique
 - user_id        BIGINT
 - event_id       BIGINT
 - sku_id         BIGINT
 - quantity       INT
-- total_amount   INT             -- 单位分
+- total_amount   BIGINT          -- 单位分
 - status         TINYINT(1)      -- 0待支付 1已支付 2已取消 3已超时
-- deleted        TINYINT(1)
-- create_time    DATETIME
 - pay_time       DATETIME
 - cancel_time    DATETIME
+- deleted        TINYINT(1)
+- create_time    DATETIME
 - update_time    DATETIME
 
+unique key uk_order_no(order_no)
 unique key uk_user_sku(user_id, sku_id)  -- final idempotency guard
-```
 
-Optional message tracking table:
-
-```sql
 tb_ticket_order_msg
 - id             BIGINT
-- message_id     VARCHAR(128)    -- Kafka message key for dedup
+- message_id     VARCHAR(128)    -- TicketRushMessage.messageId (UUID), unique
 - user_id        BIGINT
 - event_id       BIGINT
 - sku_id         BIGINT
 - quantity       INT
 - status         TINYINT(1)      -- 0待处理 1成功 2失败
-- error_message  TEXT
+- error_message  VARCHAR(1024)
 - deleted        TINYINT(1)
 - create_time    DATETIME
 - update_time    DATETIME
@@ -442,9 +442,25 @@ tb_ticket_order_msg
 APIs:
 
 ```text
-GET /api/orders/{orderId}
-GET /api/orders/by-no/{orderNo}
-GET /api/orders/me
+GET /api/orders/{orderId}         -- Requires Bearer token; only returns own orders
+GET /api/orders/by-no/{orderNo}   -- Requires Bearer token; only returns own orders
+GET /api/orders/me                -- Requires Bearer token; returns all orders desc by create_time
+```
+
+Notes:
+
+- `TicketRushConsumer` is a thin `@KafkaListener` wrapper; all business logic is in `OrderServiceImpl`.
+- Idempotency has two layers: ① `tb_ticket_order_msg.message_id` unique index (primary gate); ② `uk_user_sku(user_id, sku_id)` on `tb_ticket_order` (final backstop, should never fire given upstream Lua guarantee).
+- Null guard: if `ticketSkuMapper.selectById(skuId)` returns null, message is marked `status=2` (failed) and skipped — avoids NPE and infinite Kafka retry.
+- Known limitation: if `uk_user_sku` fires (Lua script bug), the whole transaction rolls back including the `tb_ticket_order_msg` INSERT, causing an infinite Kafka retry loop. Production fix: use `REQUIRES_NEW` propagation for the msg INSERT so it commits independently.
+- `JsonProcessingException` from Kafka is caught and logged (not rethrown) — message is skipped. All other exceptions propagate to trigger Kafka retry.
+- `userId` ownership is enforced at service layer: `getById` and `getByOrderNo` throw `OrderNotFoundException` if order belongs to a different user.
+
+Error codes:
+
+```text
+ORDER_NOT_FOUND   404   -- order does not exist or belongs to another user
+UNAUTHORIZED      401   -- missing or invalid JWT
 ```
 
 ### 7. Payment and Cancel Module 🔲 Pending
@@ -529,13 +545,13 @@ Implement these first:
 tb_user           ✅ Done
 tb_event          ✅ Done
 tb_ticket_sku     ✅ Done
-tb_ticket_order   🔲 Pending
+tb_ticket_order   ✅ Done
 ```
 
 Add these only when the core flow needs them:
 
 ```text
-tb_ticket_order_msg    -- Kafka message idempotency/failure tracking
+tb_ticket_order_msg    ✅ Done (Kafka message idempotency/failure tracking)
 tb_ai_chat_session     -- AI chat session history
 tb_ticket_rule_doc     -- RAG document metadata
 ```
@@ -550,9 +566,8 @@ flowchart TD
     C -->|是| E["Redis 扣库存 + 记录用户"]
     E --> F["发送 Kafka 消息"]
     F --> G["订单消费者"]
-    G --> H["MySQL 扣库存"]
-    H --> I["创建订单"]
-    I --> J["返回待支付订单"]
+    G --> H["创建订单（tb_ticket_order）"]
+    H --> I["返回待支付订单"]
 ```
 
 ## Implementation Rules for Agents
