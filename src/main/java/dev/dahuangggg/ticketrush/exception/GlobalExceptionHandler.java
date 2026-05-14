@@ -1,7 +1,6 @@
 package dev.dahuangggg.ticketrush.exception;
 
 import dev.dahuangggg.ticketrush.dto.common.ErrorResponse;
-import dev.dahuangggg.ticketrush.exception.TicketSkuNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -27,12 +26,18 @@ public class GlobalExceptionHandler {
         return new ErrorResponse("SMS_COOLDOWN", exception.getMessage());
     }
 
+    /**
+     * 处理 refreshToken 无效的情况。
+     */
     @ExceptionHandler(InvalidRefreshTokenException.class)
     @ResponseStatus(HttpStatus.UNAUTHORIZED)
     public ErrorResponse handleInvalidRefreshToken(InvalidRefreshTokenException exception) {
         return new ErrorResponse("UNAUTHORIZED", exception.getMessage());
     }
 
+    /**
+     * 处理短信验证码错误的情况。
+     */
     @ExceptionHandler(InvalidSmsCodeException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ErrorResponse handleInvalidSmsCode(InvalidSmsCodeException exception) {
@@ -67,12 +72,18 @@ public class GlobalExceptionHandler {
         return new ErrorResponse("BAD_REQUEST", message);
     }
 
+    /**
+     * 处理事件不存在的情况。
+     */
     @ExceptionHandler(EventNotFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     public ErrorResponse handleEventNotFound(EventNotFoundException exception) {
         return new ErrorResponse("EVENT_NOT_FOUND", exception.getMessage());
     }
 
+    /**
+     * 处理票种不存在的情况。
+     */
     @ExceptionHandler(TicketSkuNotFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     public ErrorResponse handleTicketSkuNotFound(TicketSkuNotFoundException exception) {

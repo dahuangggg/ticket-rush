@@ -33,7 +33,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         "/api/auth/refresh",    // 用 refreshToken 换新 accessToken，accessToken 可能已过期
                         "/api/auth/logout",     // 退出登录，保证 accessToken 过期时也能退出
                         "/api/events",          // 活动列表，公开浏览无需登录
-                        "/api/events/**",       // 活动详情，公开浏览无需登录
+                        "/api/events/**",       // 活动详情 + 票档列表（/api/events/{id}/skus），公开浏览无需登录
                         "/api/ticket-skus/**"   // 票档详情，公开浏览无需登录
                 );
     }
