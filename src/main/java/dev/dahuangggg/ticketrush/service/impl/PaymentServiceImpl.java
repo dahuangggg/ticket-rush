@@ -3,6 +3,8 @@ package dev.dahuangggg.ticketrush.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import dev.dahuangggg.ticketrush.entity.TicketOrder;
+import static dev.dahuangggg.ticketrush.service.impl.TicketRushServiceImpl.ORDER_USER_KEY_PREFIX;
+import static dev.dahuangggg.ticketrush.service.impl.TicketRushServiceImpl.STOCK_KEY_PREFIX;
 import dev.dahuangggg.ticketrush.exception.OrderNotFoundException;
 import dev.dahuangggg.ticketrush.exception.OrderNotPendingException;
 import dev.dahuangggg.ticketrush.mapper.TicketOrderMapper;
@@ -24,10 +26,6 @@ import java.util.List;
 public class PaymentServiceImpl implements PaymentService {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentServiceImpl.class);
-
-    // Redis key 前缀，与 TicketRushServiceImpl 保持一致
-    private static final String STOCK_KEY_PREFIX      = "ticket:stock:";
-    private static final String ORDER_USER_KEY_PREFIX = "ticket:order:user:";
 
     // 待支付超时阈值（分钟）
     private static final int TIMEOUT_MINUTES = 15;
@@ -129,6 +127,10 @@ public class PaymentServiceImpl implements PaymentService {
      * 与 TicketRushServiceImpl 中 Lua 脚本操作的 key 对应：
      *   INCR  ticket:stock:{skuId}
      *   SREM  ticket:order:user:{skuId}  {userId}
+     *
+     * 注意：两条命令非原子操作。若进程在 INCR 成功后、SREM 执行前崩溃，
+     * 库存会被归还但用户仍留在抢购 Set 中，导致该用户无法再次抢票。
+     * 生产环境修复方案：改用 Lua 脚本将 INCR + SREM 合并为原子操作。
      */
     private void rollbackRedis(Long skuId, Long userId) {
         redisTemplate.opsForValue().increment(STOCK_KEY_PREFIX + skuId);
