@@ -34,7 +34,7 @@ The current `pom.xml` already includes Kafka dependencies. Use Kafka for async o
 | 4 | Redis stock initialization | ✅ Done |
 | 5 | Lua rush eligibility validation | ✅ Done |
 | 6 | Async order creation with Kafka | ✅ Done |
-| 7 | Order query, simulated payment, and cancel | 🔲 Pending |
+| 7 | Order query, simulated payment, and cancel | ✅ Done |
 | 8 | AI function calling | 🔲 Pending |
 | 9 | RAG knowledge base | 🔲 Pending |
 
@@ -463,32 +463,48 @@ ORDER_NOT_FOUND   404   -- order does not exist or belongs to another user
 UNAUTHORIZED      401   -- missing or invalid JWT
 ```
 
-### 7. Payment and Cancel Module 🔲 Pending
+### 7. Payment and Cancel Module ✅ Done
 
-Start with simulated payment. Do not integrate a real payment provider in the first version.
+Simulated payment only — no real payment provider. Status transitions are guarded by CAS (`WHERE status=0`) to prevent concurrent overwrites.
 
 Main flow:
 
 ```text
-order created -> pending payment
-user pays -> status becomes paid
-payment timeout -> cancel order and roll back stock
-user cancels -> cancel order and roll back stock
+order created (status=0, 待支付)
+  → user pays             → status=1 已支付
+  → user cancels          → status=2 已取消  + Redis rollback
+  → @Scheduled timeout    → status=3 已超时  + Redis rollback (every 60s, threshold 15min)
 ```
 
-Cancel or timeout rollback must do all three atomically:
+Redis rollback is atomic via `lua/ticket_rollback.lua` (INCR stock + SREM user set in one script):
 
-```text
-1. MySQL stock + 1
-2. Redis stock + 1
-3. Remove userId from Redis user rush set (ticket:order:user:{skuId})
+```lua
+redis.call('INCR', KEYS[1])   -- ticket:stock:{skuId}
+redis.call('SREM', KEYS[2], ARGV[1])  -- ticket:order:user:{skuId}
+return 0
 ```
 
 APIs:
 
 ```text
-POST /api/orders/{orderId}/pay
-POST /api/orders/{orderId}/cancel
+POST /api/orders/{orderId}/pay     -- 204 on success; 400 ORDER_NOT_PENDING if not status=0
+POST /api/orders/{orderId}/cancel  -- 204 on success; 400 ORDER_NOT_PENDING if not status=0
+```
+
+Notes:
+
+- `@EnableScheduling` is provided by `SchedulingConfig`.
+- `cancelTimeoutOrders()` is `@Scheduled(fixedDelay=60_000)` and also directly callable in tests.
+- userId is read from `UserContext` (JWT interceptor) — never from request params.
+- Ownership check: returns `404 ORDER_NOT_FOUND` for both non-existent and other-user orders.
+- MySQL stock is NOT rolled back — Redis counter is the authoritative source (consistent with Module 6).
+
+Error codes:
+
+```text
+ORDER_NOT_PENDING  400   -- order is not in pending-payment status
+ORDER_NOT_FOUND    404   -- order does not exist or belongs to another user
+UNAUTHORIZED       401   -- missing or invalid JWT
 ```
 
 ## AI Ticket Assistant 🔲 Pending
