@@ -33,7 +33,7 @@ class StockInitControllerTest {
     @BeforeEach
     void setup() {
         User user = User.builder()
-                .id(1001L).phone("13800138000").nickName("测试用户").icon("").build();
+                .id(1001L).phone("13800138000").nickName("测试用户").icon("").role("admin").build();
         token = jwtTokenService.issueAccessToken(user).accessToken();
     }
 

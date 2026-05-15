@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - "codex/**"
+  pull_request:
+
+jobs:
+  test:
+    name: Maven Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Start dependencies
+        run: docker compose up -d mysql redis kafka
+
+      - name: Wait for dependencies
+        run: |
+          timeout 180 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" ticket-rush-mysql)" = "healthy" ]; do sleep 5; done'
+          timeout 180 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" ticket-rush-redis)" = "healthy" ]; do sleep 5; done'
+          timeout 180 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" ticket-rush-kafka)" = "healthy" ]; do sleep 5; done'
+
+      - name: Run tests
+        run: ./mvnw -B test
+
+      - name: Show dependency logs on failure
+        if: failure()
+        run: docker compose logs mysql redis kafka
+
+      - name: Stop dependencies
+        if: always()
+        run: docker compose down -v
