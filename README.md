@@ -12,6 +12,7 @@
 | Redis + Lua | — |
 | Kafka | — |
 | JWT (jjwt) | 0.13.x |
+| Caffeine | 本地缓存 L1 |
 
 ## 核心抢票链路
 
@@ -60,7 +61,9 @@ docker compose up -d
 **初始化库存（示例 SKU 3001）**：
 
 ```bash
-curl -X POST http://localhost:8081/api/admin/skus/3001/init-stock
+# 需要 admin 角色的 JWT
+curl -X POST http://localhost:8081/api/admin/skus/3001/init-stock \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 **端到端抢票**：
@@ -90,7 +93,7 @@ curl http://localhost:8081/api/orders/me -H "Authorization: Bearer $TOKEN"
 | POST | `/api/auth/login` | 登录，返回 JWT |
 | GET  | `/api/events` | 演出列表（支持城市/关键词/日期筛选） |
 | GET  | `/api/events/{id}/skus` | 票档列表 |
-| POST | `/api/admin/skus/{id}/init-stock` | 初始化 Redis 库存 |
+| POST | `/api/admin/skus/{id}/init-stock` | 初始化 Redis 库存（需 admin 角色） |
 | POST | `/api/ticket-rush/requests` | 抢票（需登录） |
 | GET  | `/api/orders/me` | 我的订单列表（需登录） |
 | POST | `/api/orders/{id}/pay` | 模拟支付（需登录） |

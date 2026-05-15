@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS tb_user (
     phone VARCHAR(20) NOT NULL COMMENT 'Login phone number',
     nick_name VARCHAR(64) NOT NULL DEFAULT '' COMMENT 'Display name',
     icon VARCHAR(512) NOT NULL DEFAULT '' COMMENT 'Avatar URL',
+    role VARCHAR(16) NOT NULL DEFAULT 'user' COMMENT 'User role: user or admin',
     deleted TINYINT NOT NULL DEFAULT 0 COMMENT 'Logical delete flag: 0 normal, 1 deleted',
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Create time',
     update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',

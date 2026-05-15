@@ -41,6 +41,9 @@ public class EventCacheInvalidationConsumer {
         } catch (JsonProcessingException e) {
             log.error("Failed to deserialize cache invalidation message: {}", message, e);
             // 反序列化失败不重试（消息格式错误，重试无意义）
+        } catch (Exception e) {
+            log.warn("Cache invalidation failed for message={}, will be retried by error handler", message);
+            throw e;  // 向上抛出，触发 DefaultErrorHandler 指数退避重试
         }
     }
 }

@@ -2,6 +2,7 @@ package dev.dahuangggg.ticketrush.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import dev.dahuangggg.ticketrush.infrastructure.redis.RedisKeyRegistry;
 import dev.dahuangggg.ticketrush.entity.TicketOrder;
 import dev.dahuangggg.ticketrush.entity.TicketRollbackTask;
 import dev.dahuangggg.ticketrush.exception.OrderNotFoundException;
@@ -33,8 +34,6 @@ public class PaymentServiceImpl implements PaymentService {
     // 待支付超时阈值（分钟）
     private static final int TIMEOUT_MINUTES = 15;
     private static final int MAX_ROLLBACK_RETRY_COUNT = 10;
-    private static final String ROLLBACK_RETRY_LOCK_KEY = "lock:ticket:rollback:retry";
-
     private final TicketOrderMapper ticketOrderMapper;
     private final TicketRollbackTaskMapper ticketRollbackTaskMapper;
     private final RedisRollbackService redisRollbackService;
@@ -136,7 +135,7 @@ public class PaymentServiceImpl implements PaymentService {
     @Scheduled(fixedDelay = 30_000)
     public void retryRollbackTasks() {
         if (redissonClient != null) {
-            RLock lock = redissonClient.getLock(ROLLBACK_RETRY_LOCK_KEY);
+            RLock lock = redissonClient.getLock(RedisKeyRegistry.rollbackRetryLock());
             if (!lock.tryLock()) {
                 return;
             }

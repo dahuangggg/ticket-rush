@@ -56,6 +56,11 @@ public class User {
     private String icon;
 
     /**
+     * 用户角色，默认为 "user"，管理员为 "admin"。
+     */
+    private String role;
+
+    /**
      * 逻辑删除字段。
      *
      * MyBatis-Plus 查询时会自动过滤 deleted=1 的数据。

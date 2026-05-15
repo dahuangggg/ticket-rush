@@ -8,12 +8,10 @@ import dev.dahuangggg.ticketrush.entity.TicketSku;
 import dev.dahuangggg.ticketrush.exception.OrderNotFoundException;
 import dev.dahuangggg.ticketrush.infrastructure.mq.TicketRushMessage;
 import dev.dahuangggg.ticketrush.mapper.TicketOrderMapper;
-import dev.dahuangggg.ticketrush.mapper.TicketOrderMsgMapper;
 import dev.dahuangggg.ticketrush.mapper.TicketSkuMapper;
 import dev.dahuangggg.ticketrush.service.OrderService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,22 +27,21 @@ public class OrderServiceImpl implements OrderService {
     private static final Logger log = LoggerFactory.getLogger(OrderServiceImpl.class);
 
     private final TicketOrderMapper ticketOrderMapper;
-    private final TicketOrderMsgMapper ticketOrderMsgMapper;
+    private final TicketOrderMsgService ticketOrderMsgService;
     private final TicketSkuMapper ticketSkuMapper;
 
     public OrderServiceImpl(TicketOrderMapper ticketOrderMapper,
-                            TicketOrderMsgMapper ticketOrderMsgMapper,
+                            TicketOrderMsgService ticketOrderMsgService,
                             TicketSkuMapper ticketSkuMapper) {
         this.ticketOrderMapper = ticketOrderMapper;
-        this.ticketOrderMsgMapper = ticketOrderMsgMapper;
+        this.ticketOrderMsgService = ticketOrderMsgService;
         this.ticketSkuMapper = ticketSkuMapper;
     }
 
     @Override
     @Transactional
     public void createOrder(TicketRushMessage message) {
-        // 插入消息追踪记录作为幂等门卫
-        // messageId 唯一索引冲突（DuplicateKeyException）说明该消息已处理，直接跳过
+        // 在独立事务中插入消息追踪记录（幂等门卫）
         TicketOrderMsg orderMsg = TicketOrderMsg.builder()
                 .messageId(message.messageId())
                 .userId(message.userId())
@@ -53,27 +50,20 @@ public class OrderServiceImpl implements OrderService {
                 .quantity(message.quantity())
                 .status(TicketOrderMsg.STATUS_PENDING)
                 .build();
-        try {
-            ticketOrderMsgMapper.insert(orderMsg);
-        } catch (DuplicateKeyException e) {
+        TicketOrderMsg inserted = ticketOrderMsgService.insertIfAbsent(orderMsg);
+        if (inserted == null) {
             log.info("消息已处理，跳过创单: messageId={}", message.messageId());
             return;
         }
 
-        // 查询票档单价，计算订单总金额（单位分）
         TicketSku sku = ticketSkuMapper.selectById(message.skuId());
         if (sku == null) {
-            // 票档不存在时，将消息标记为失败，避免 Kafka 因异常无限重试
             log.error("票档不存在，跳过创单: skuId={}", message.skuId());
-            ticketOrderMsgMapper.updateById(
-                    TicketOrderMsg.builder().id(orderMsg.getId()).status(TicketOrderMsg.STATUS_FAILED)
-                            .errorMessage("票档不存在: " + message.skuId()).build()
-            );
+            ticketOrderMsgService.markFailed(inserted.getId(), "票档不存在: " + message.skuId());
             return;
         }
         long totalAmount = sku.getPrice() * message.quantity();
 
-        // 创建待支付订单，orderNo 用 UUID 保证全局唯一
         TicketOrder order = TicketOrder.builder()
                 .orderNo(UUID.randomUUID().toString().replace("-", ""))
                 .userId(message.userId())
@@ -83,18 +73,9 @@ public class OrderServiceImpl implements OrderService {
                 .totalAmount(totalAmount)
                 .status(TicketOrder.STATUS_PENDING)
                 .build();
-        // 上游 Lua 脚本已通过 SADD ticket:order:user:{skuId} 保证同一 (userId, skuId) 只发送一条消息，
-        // uk_user_sku 唯一键在正常流程下不会冲突，此处作为最终兜底。
-        // 注意：若此处抛出 DuplicateKeyException，整个事务（含消息追踪记录的 INSERT）将被回滚，
-        // Kafka 会重试该消息，但因消息记录也被回滚，messageId 幂等门卫将在下次重试时再次触发，
-        // 导致无限重试循环。生产环境建议将消息追踪记录的写入改为 REQUIRES_NEW 传播，
-        // 使其在独立事务中提交，确保 messageId 门卫在重试时生效。
         ticketOrderMapper.insert(order);
 
-        // 标记消息处理成功（updateById 仅更新非 null 字段，其余字段保持不变）
-        ticketOrderMsgMapper.updateById(
-                TicketOrderMsg.builder().id(orderMsg.getId()).status(TicketOrderMsg.STATUS_SUCCESS).build()
-        );
+        ticketOrderMsgService.markSuccess(inserted.getId());
         log.info("订单创建成功: orderId={} userId={} skuId={}", order.getId(), message.userId(), message.skuId());
     }
 

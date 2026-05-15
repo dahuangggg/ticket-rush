@@ -136,6 +136,17 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 处理 Kafka 消息发送失败的情况。
+     * 返回 503 而非 500，提示客户端可以重试。
+     */
+    @ExceptionHandler(KafkaPublishException.class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    public ErrorResponse handleKafkaPublish(KafkaPublishException exception) {
+        log.error("Kafka publish failed", exception);
+        return new ErrorResponse("SERVICE_UNAVAILABLE", "系统繁忙，请稍后重试");
+    }
+
+    /**
      * 未命中错误处理。
      */
     @ExceptionHandler(Exception.class)

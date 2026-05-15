@@ -1,5 +1,6 @@
 package dev.dahuangggg.ticketrush.service.impl;
 
+import dev.dahuangggg.ticketrush.infrastructure.redis.RedisKeyRegistry;
 import dev.dahuangggg.ticketrush.service.RefreshTokenStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -20,8 +21,6 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
      * 示例：
      * auth:refresh-token:550e8400-e29b-41d4-a716-446655440000 -> 1001
      */
-    private static final String KEY_PREFIX = "auth:refresh-token:";
-
     private final StringRedisTemplate redisTemplate;
 
     /*
@@ -52,7 +51,7 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
     @Override
     public String issue(Long userId) {
         String token = UUID.randomUUID().toString();
-        redisTemplate.opsForValue().set(key(token), String.valueOf(userId), refreshTokenTtl);
+        redisTemplate.opsForValue().set(RedisKeyRegistry.refreshTokenKey(token), String.valueOf(userId), refreshTokenTtl);
         return token;
     }
 
@@ -63,7 +62,7 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
      */
     @Override
     public Long getUserId(String token) {
-        String userId = redisTemplate.opsForValue().get(key(token));
+        String userId = redisTemplate.opsForValue().get(RedisKeyRegistry.refreshTokenKey(token));
         return userId == null ? null : Long.parseLong(userId);
     }
 
@@ -75,7 +74,7 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
      */
     @Override
     public void touch(String token) {
-        redisTemplate.expire(key(token), refreshTokenTtl);
+        redisTemplate.expire(RedisKeyRegistry.refreshTokenKey(token), refreshTokenTtl);
     }
 
     /**
@@ -88,10 +87,6 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
      */
     @Override
     public void delete(String token) {
-        redisTemplate.delete(key(token));
-    }
-
-    private String key(String token) {
-        return KEY_PREFIX + token;
+        redisTemplate.delete(RedisKeyRegistry.refreshTokenKey(token));
     }
 }

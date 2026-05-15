@@ -160,7 +160,7 @@ class TicketRushServiceTest {
         private boolean failNextSend;
 
         FakeTicketRushProducer() {
-            super(null, null);
+            super(null, null, 3);
         }
 
         @Override

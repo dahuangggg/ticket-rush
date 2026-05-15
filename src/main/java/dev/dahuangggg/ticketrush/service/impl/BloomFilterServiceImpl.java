@@ -3,6 +3,7 @@ package dev.dahuangggg.ticketrush.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import dev.dahuangggg.ticketrush.entity.Event;
 import dev.dahuangggg.ticketrush.mapper.EventMapper;
+import dev.dahuangggg.ticketrush.infrastructure.redis.RedisKeyRegistry;
 import dev.dahuangggg.ticketrush.service.BloomFilterService;
 import jakarta.annotation.PostConstruct;
 import org.redisson.api.RBloomFilter;
@@ -29,7 +30,6 @@ public class BloomFilterServiceImpl implements BloomFilterService {
      * Redisson RBloomFilter 底层基于 Redis BitMap，支持分布式多实例共享，
      * 不同于 JVM 内存中的 Bloom Filter，多实例部署时状态一致。
      */
-    private static final String BLOOM_FILTER_KEY = "event:bloom";
     private static final long EXPECTED_INSERTIONS = 10_000;
     private static final double FALSE_POSITIVE_RATE = 0.01;
 
@@ -37,7 +37,7 @@ public class BloomFilterServiceImpl implements BloomFilterService {
     private final EventMapper eventMapper;
 
     public BloomFilterServiceImpl(RedissonClient redissonClient, EventMapper eventMapper) {
-        this.bloomFilter = redissonClient.getBloomFilter(BLOOM_FILTER_KEY);
+        this.bloomFilter = redissonClient.getBloomFilter(RedisKeyRegistry.eventBloomFilterKey());
         this.bloomFilter.tryInit(EXPECTED_INSERTIONS, FALSE_POSITIVE_RATE);
         this.eventMapper = eventMapper;
     }

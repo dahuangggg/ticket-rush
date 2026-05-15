@@ -1,12 +1,13 @@
 SET NAMES utf8mb4;
 
-INSERT INTO tb_user (id, phone, nick_name, icon, create_time, update_time) VALUES
-(1001, '13800000001', '小黄', 'https://example.com/avatar/user-1001.png', '2026-05-13 10:00:00', '2026-05-13 10:00:00'),
-(1002, '13800000002', '阿陈', 'https://example.com/avatar/user-1002.png', '2026-05-13 10:05:00', '2026-05-13 10:05:00'),
-(1003, '13800000003', '林同学', 'https://example.com/avatar/user-1003.png', '2026-05-13 10:10:00', '2026-05-13 10:10:00')
+INSERT INTO tb_user (id, phone, nick_name, icon, role, create_time, update_time) VALUES
+(1001, '13800000001', '小黄', 'https://example.com/avatar/user-1001.png', 'admin', '2026-05-13 10:00:00', '2026-05-13 10:00:00'),
+(1002, '13800000002', '阿陈', 'https://example.com/avatar/user-1002.png', 'user', '2026-05-13 10:05:00', '2026-05-13 10:05:00'),
+(1003, '13800000003', '林同学', 'https://example.com/avatar/user-1003.png', 'user', '2026-05-13 10:10:00', '2026-05-13 10:10:00')
 ON DUPLICATE KEY UPDATE
     nick_name = VALUES(nick_name),
     icon = VALUES(icon),
+    role = VALUES(role),
     update_time = VALUES(update_time);
 
 INSERT INTO tb_event (

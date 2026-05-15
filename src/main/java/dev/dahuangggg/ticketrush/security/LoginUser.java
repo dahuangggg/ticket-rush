@@ -9,6 +9,7 @@ package dev.dahuangggg.ticketrush.security;
  */
 public record LoginUser(
         Long userId,
-        String phone
+        String phone,
+        String role
 ) {
 }

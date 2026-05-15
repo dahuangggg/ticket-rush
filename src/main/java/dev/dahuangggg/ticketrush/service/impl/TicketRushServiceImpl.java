@@ -8,8 +8,10 @@ import dev.dahuangggg.ticketrush.exception.SoldOutException;
 import dev.dahuangggg.ticketrush.exception.TicketSkuUnavailableException;
 import dev.dahuangggg.ticketrush.infrastructure.mq.TicketRushMessage;
 import dev.dahuangggg.ticketrush.infrastructure.mq.TicketRushProducer;
+import dev.dahuangggg.ticketrush.infrastructure.redis.RedisKeyRegistry;
 import dev.dahuangggg.ticketrush.mapper.TicketSkuMapper;
 import dev.dahuangggg.ticketrush.service.RedisRollbackService;
+import dev.dahuangggg.ticketrush.infrastructure.redis.RushResult;
 import dev.dahuangggg.ticketrush.service.TicketRushService;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -23,9 +25,8 @@ import java.util.UUID;
 @Service
 public class TicketRushServiceImpl implements TicketRushService {
 
-    // Redis key 前缀，与 StockInitServiceImpl.STOCK_KEY 保持一致
-    static final String STOCK_KEY_PREFIX      = "ticket:stock:";
-    static final String ORDER_USER_KEY_PREFIX = "ticket:order:user:";
+    // 用户去重集合的兜底 TTL（秒），防止回滚失败时用户被永久锁定
+    private static final long DEDUP_TTL_SECONDS = 3600;
 
     private final StringRedisTemplate redisTemplate;
     private final TicketRushProducer producer;
@@ -54,17 +55,16 @@ public class TicketRushServiceImpl implements TicketRushService {
         validateSkuAvailable(request);
 
         List<String> keys = List.of(
-                STOCK_KEY_PREFIX + skuId,
-                ORDER_USER_KEY_PREFIX + skuId
+                RedisKeyRegistry.stockKey(skuId),
+                RedisKeyRegistry.orderUserKey(skuId)
         );
 
-        Long result = redisTemplate.execute(rushScript, keys, String.valueOf(userId));
+        Long result = redisTemplate.execute(rushScript, keys, String.valueOf(userId), String.valueOf(DEDUP_TTL_SECONDS));
 
-        if (Long.valueOf(1L).equals(result)) {
-            throw new SoldOutException(skuId);
-        }
-        if (Long.valueOf(2L).equals(result)) {
-            throw new DuplicateOrderException(skuId);
+        switch (RushResult.fromCode(result)) {
+            case SOLD_OUT -> throw new SoldOutException(skuId);
+            case DUPLICATE -> throw new DuplicateOrderException(skuId);
+            case SUCCESS -> { /* continue to Kafka send */ }
         }
 
         // Lua 返回 0：扣库存成功，发送 Kafka 消息触发异步创单

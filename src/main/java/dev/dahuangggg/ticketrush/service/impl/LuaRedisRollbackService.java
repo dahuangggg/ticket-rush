@@ -1,5 +1,6 @@
 package dev.dahuangggg.ticketrush.service.impl;
 
+import dev.dahuangggg.ticketrush.infrastructure.redis.RedisKeyRegistry;
 import dev.dahuangggg.ticketrush.service.RedisRollbackService;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -24,8 +25,8 @@ public class LuaRedisRollbackService implements RedisRollbackService {
     @Override
     public void rollback(Long skuId, Long userId) {
         List<String> keys = List.of(
-                TicketRushServiceImpl.STOCK_KEY_PREFIX + skuId,
-                TicketRushServiceImpl.ORDER_USER_KEY_PREFIX + skuId
+                RedisKeyRegistry.stockKey(skuId),
+                RedisKeyRegistry.orderUserKey(skuId)
         );
         Long result = redisTemplate.execute(rollbackScript, keys, String.valueOf(userId));
         if (result == null) {

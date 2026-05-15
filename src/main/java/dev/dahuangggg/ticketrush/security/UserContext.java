@@ -29,6 +29,11 @@ public final class UserContext {
         return loginUser == null ? null : loginUser.userId();
     }
 
+    public static String getRole() {
+        LoginUser loginUser = HOLDER.get();
+        return loginUser == null ? null : loginUser.role();
+    }
+
     public static void clear() {
         HOLDER.remove();
     }

@@ -59,6 +59,7 @@ public class JwtTokenService {
                 .subject(String.valueOf(user.getId()))
                 .claim("userId", user.getId())
                 .claim("phone", user.getPhone())
+                .claim("role", user.getRole() != null ? user.getRole() : "user")
                 .issuedAt(Date.from(issuedAt))
                 .expiration(Date.from(expiresAt))
                 .signWith(signingKey)
@@ -90,10 +91,11 @@ public class JwtTokenService {
 
             Long userId = claims.get("userId", Long.class);
             String phone = claims.get("phone", String.class);
+            String role = claims.get("role", String.class);
             if (userId == null || phone == null || phone.isBlank()) {
                 throw new UnauthorizedException("登录状态无效");
             }
-            return new LoginUser(userId, phone);
+            return new LoginUser(userId, phone, role != null ? role : "user");
         } catch (JwtException | IllegalArgumentException exception) {
             throw new UnauthorizedException("登录状态已过期或无效");
         }

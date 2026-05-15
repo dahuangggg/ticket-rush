@@ -1,5 +1,6 @@
 package dev.dahuangggg.ticketrush.config;
 
+import dev.dahuangggg.ticketrush.security.AdminAuthInterceptor;
 import dev.dahuangggg.ticketrush.security.JwtAuthenticationInterceptor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
@@ -10,20 +11,14 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 public class WebMvcConfig implements WebMvcConfigurer {
 
     private final JwtAuthenticationInterceptor jwtAuthenticationInterceptor;
+    private final AdminAuthInterceptor adminAuthInterceptor;
 
-    public WebMvcConfig(JwtAuthenticationInterceptor jwtAuthenticationInterceptor) {
+    public WebMvcConfig(JwtAuthenticationInterceptor jwtAuthenticationInterceptor,
+                        AdminAuthInterceptor adminAuthInterceptor) {
         this.jwtAuthenticationInterceptor = jwtAuthenticationInterceptor;
+        this.adminAuthInterceptor = adminAuthInterceptor;
     }
 
-    /**
-     * 注册 JWT 登录态拦截器。
-     *
-     * 放行认证接口：
-     * - POST /api/auth/sms-code 用于获取验证码，还没有 token。
-     * - POST /api/auth/login 用于登录换取 token，也还没有 token。
-     *
-     * 其他 /api/** 接口默认都需要携带 Bearer token。
-     */
     /**
      * 开发环境跨域配置，允许所有来源访问 API，方便前端本地调试和 Demo 页面使用。
      */
@@ -36,8 +31,13 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 .allowCredentials(false);
     }
 
+    /**
+     * 注册拦截器。顺序重要：JWT 拦截器必须先于 Admin 拦截器执行，
+     * 因为 AdminAuthInterceptor 依赖 JWT 拦截器设置的 UserContext 来读取角色。
+     */
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
+        // 1. JWT 登录态拦截器（设置 UserContext）
         registry.addInterceptor(jwtAuthenticationInterceptor)
                 .addPathPatterns("/api/**")
                 .excludePathPatterns(
@@ -49,5 +49,9 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         "/api/events/**",       // 活动详情 + 票档列表（/api/events/{id}/skus），公开浏览无需登录
                         "/api/ticket-skus/**"   // 票档详情，公开浏览无需登录
                 );
+
+        // 2. 管理员权限拦截器（依赖上面的 UserContext 已设置）
+        registry.addInterceptor(adminAuthInterceptor)
+                .addPathPatterns("/api/admin/**");
     }
 }

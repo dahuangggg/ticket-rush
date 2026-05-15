@@ -11,16 +11,13 @@ import dev.dahuangggg.ticketrush.infrastructure.mq.EventCacheInvalidationProduce
 import dev.dahuangggg.ticketrush.mapper.EventMapper;
 import dev.dahuangggg.ticketrush.service.BloomFilterService;
 import dev.dahuangggg.ticketrush.service.EventService;
+import dev.dahuangggg.ticketrush.service.HotSpotDetector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 
 @Service
@@ -28,42 +25,28 @@ public class EventServiceImpl implements EventService {
 
     private static final Logger log = LoggerFactory.getLogger(EventServiceImpl.class);
 
-    private static final ExecutorService ACCESS_TRACKER_EXECUTOR =
-            Executors.newFixedThreadPool(2, r -> {
-                Thread t = new Thread(r, "access-tracker");
-                t.setDaemon(true);
-                return t;
-            });
-
-    /*
-     * 动态热点检测阈值：1 分钟内访问量超过此值，触发缓存预热并告警。
-     * 仅作为运营漏标后的补救手段，不是第一道防线。
-     */
-    private static final long HOT_DETECT_THRESHOLD = 1000;
-    private static final String ACCESS_COUNT_KEY = "event:access:count:";
-    private static final Duration ACCESS_COUNT_WINDOW = Duration.ofMinutes(1);
-
     private final EventMapper eventMapper;
     private final EventCacheManager cacheManager;
     private final EventCacheInvalidationProducer cacheInvalidationProducer;
-    private final StringRedisTemplate redisTemplate;
 
     /*
-     * BloomFilterService is always present: either BloomFilterServiceImpl
-     * (when Redisson is enabled) or NoOpBloomFilterService (when disabled).
+     * BloomFilterService 始终存在：
+     * 要么是启用了 Redisson 时的 BloomFilterServiceImpl，
+     * 要么是禁用 Redisson 时的 NoOpBloomFilterService。
      */
     private final BloomFilterService bloomFilterService;
+    private final HotSpotDetector hotSpotDetector;
 
     public EventServiceImpl(EventMapper eventMapper,
                             EventCacheManager cacheManager,
                             EventCacheInvalidationProducer cacheInvalidationProducer,
-                            StringRedisTemplate redisTemplate,
-                            BloomFilterService bloomFilterService) {
+                            BloomFilterService bloomFilterService,
+                            HotSpotDetector hotSpotDetector) {
         this.eventMapper = eventMapper;
         this.cacheManager = cacheManager;
         this.cacheInvalidationProducer = cacheInvalidationProducer;
-        this.redisTemplate = redisTemplate;
         this.bloomFilterService = bloomFilterService;
+        this.hotSpotDetector = hotSpotDetector;
     }
 
     /**
@@ -134,7 +117,9 @@ public class EventServiceImpl implements EventService {
 
         if (result != null) {
             // 命中热点缓存（可能是旧数据，等待异步重建），直接返回
-            trackAccessAsync(eventId, loadedEvent.get());
+            // Hot cache path — event is definitely hot; loadedEvent might be null if no DB call was needed
+            boolean isHot = loadedEvent.get() == null || Integer.valueOf(1).equals(loadedEvent.get().getIsHot());
+            hotSpotDetector.trackAccessAsync(eventId, isHot, result);
             return result;
         }
 
@@ -161,7 +146,8 @@ public class EventServiceImpl implements EventService {
             throw new EventNotFoundException(eventId);
         }
 
-        trackAccessAsync(eventId, loadedEvent.get());
+        boolean isHot = loadedEvent.get() != null && Integer.valueOf(1).equals(loadedEvent.get().getIsHot());
+        hotSpotDetector.trackAccessAsync(eventId, isHot, result);
         return result;
     }
 
@@ -197,34 +183,6 @@ public class EventServiceImpl implements EventService {
         return eventMapper.selectList(wrapper).stream()
                 .map(this::toDTO)
                 .toList();
-    }
-
-    @jakarta.annotation.PreDestroy
-    void shutdownAccessTracker() {
-        ACCESS_TRACKER_EXECUTOR.shutdown();
-    }
-
-    private void trackAccessAsync(Long eventId, Event event) {
-        // 访问量统计不能影响主流程，使用共享有界线程池异步执行
-        ACCESS_TRACKER_EXECUTOR.submit(() -> {
-            try {
-                String key = ACCESS_COUNT_KEY + eventId;
-                Long count = redisTemplate.opsForValue().increment(key);
-                if (count != null && count == 1L) {
-                    redisTemplate.expire(key, ACCESS_COUNT_WINDOW);
-                }
-                if (count != null && count >= HOT_DETECT_THRESHOLD
-                        && event != null && !Integer.valueOf(1).equals(event.getIsHot())) {
-                    log.warn("Dynamic hot event detected: eventId={}, accessCount={} in 1min. "
-                            + "Consider marking is_hot=1 in admin console.", eventId, count);
-                    // 自动触发预热，作为运营漏标的兜底
-                    cacheManager.warmUp(eventId, toDetailDTO(event));
-                }
-                // event == null means we arrived via the hot-cache path; warm-up already handled
-            } catch (Exception e) {
-                log.warn("Access tracking failed for eventId={}", eventId, e);
-            }
-        });
     }
 
     private String buildListCacheKey(EventListRequest request) {

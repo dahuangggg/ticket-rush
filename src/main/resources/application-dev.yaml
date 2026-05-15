@@ -58,6 +58,12 @@ mybatis-plus:
 ticket-rush:
   redisson:
     enabled: ${REDISSON_ENABLED:false}
+  kafka:
+    send-timeout-seconds: ${KAFKA_SEND_TIMEOUT_SECONDS:3}
+  cache:
+    redis-enabled: ${CACHE_REDIS_ENABLED:true}
+    hot-detect-threshold: ${HOT_DETECT_THRESHOLD:1000}
+    access-count-window-seconds: ${ACCESS_COUNT_WINDOW_SECONDS:60}
   auth:
     sms-code-ttl: ${SMS_CODE_TTL:5m}
     refresh-token-ttl: ${REFRESH_TOKEN_TTL:14d}
