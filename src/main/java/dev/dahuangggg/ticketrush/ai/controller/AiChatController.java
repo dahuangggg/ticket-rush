@@ -2,6 +2,7 @@ package dev.dahuangggg.ticketrush.ai.controller;
 
 import dev.dahuangggg.ticketrush.ai.dto.ChatRequest;
 import dev.dahuangggg.ticketrush.ai.service.AiAssistantService;
+import dev.dahuangggg.ticketrush.security.UserContext;
 import dev.langchain4j.data.message.ChatMessage;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -24,11 +25,12 @@ public class AiChatController {
 
     @PostMapping("/chat")
     public Map<String, String> chat(@Valid @RequestBody ChatRequest req) {
+        Long userId = UserContext.getUserId();
         String answer;
         try {
-            answer = service.chat(req.getSessionId(), req.getMessage());
+            answer = service.chat(userId, req.getSessionId(), req.getMessage());
         } catch (Exception e) {
-            log.warn("AI chat failed sessionId={}", req.getSessionId(), e);
+            log.warn("AI chat failed userId={} sessionId={}", userId, req.getSessionId(), e);
             answer = "抱歉，AI 服务暂时不可用：" + e.getClass().getSimpleName();
         }
         return Map.of("sessionId", req.getSessionId(), "answer", answer);
@@ -36,11 +38,11 @@ public class AiChatController {
 
     @GetMapping("/sessions/{sessionId}/messages")
     public List<ChatMessage> history(@PathVariable String sessionId) {
-        return service.history(sessionId);
+        return service.history(UserContext.getUserId(), sessionId);
     }
 
     @DeleteMapping("/sessions/{sessionId}")
     public void clear(@PathVariable String sessionId) {
-        service.clear(sessionId);
+        service.clear(UserContext.getUserId(), sessionId);
     }
 }

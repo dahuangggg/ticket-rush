@@ -6,7 +6,9 @@ import dev.dahuangggg.ticketrush.infrastructure.redis.RedisKeyRegistry;
 import dev.dahuangggg.ticketrush.mapper.RushReminderMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -14,6 +16,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
@@ -28,6 +31,7 @@ public class ReminderScheduler {
     private final RushReminderService service;
     private final StringRedisTemplate redis;
     private final Clock clock;
+    private final DefaultRedisScript<Long> releaseLockScript;
 
     public ReminderScheduler(RushReminderMapper mapper,
                              RushReminderService service,
@@ -37,14 +41,17 @@ public class ReminderScheduler {
         this.service = service;
         this.redis = redis;
         this.clock = clock;
+        this.releaseLockScript = new DefaultRedisScript<>();
+        this.releaseLockScript.setLocation(new ClassPathResource("lua/release_lock.lua"));
+        this.releaseLockScript.setResultType(Long.class);
     }
 
     /** 主扫描：ZSet 取到期 → fire → ZREM。 */
     @Scheduled(fixedDelayString = "${ticketrush.ai.reminder.scan-interval-ms:10000}")
     public void scan() {
         String token = UUID.randomUUID().toString();
-        Boolean acquired = redis.opsForValue()
-                .setIfAbsent(RedisKeyRegistry.aiReminderLock(), token, LOCK_TTL);
+        String lockKey = RedisKeyRegistry.aiReminderLock();
+        Boolean acquired = redis.opsForValue().setIfAbsent(lockKey, token, LOCK_TTL);
         if (!Boolean.TRUE.equals(acquired)) return;
         try {
             double now = nowEpochMillis();
@@ -62,7 +69,9 @@ public class ReminderScheduler {
                 }
             }
         } finally {
-            redis.delete(RedisKeyRegistry.aiReminderLock());
+            // Compare-and-delete: only release if we still own the lock (TTL may have expired
+            // and another node acquired it). Without this check we could delete another node's lock.
+            redis.execute(releaseLockScript, List.of(lockKey), token);
         }
     }
 
