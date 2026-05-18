@@ -3,3 +3,18 @@ spring:
     name: ticket-rush
   profiles:
     active: dev
+
+ticketrush:
+  ai:
+    openai:
+      base-url: https://api.openai.com/v1
+      api-key: ${OPENAI_API_KEY:}
+      model: gpt-5.4
+      timeout: 30s
+    chat:
+      memory-max-messages: 20
+      memory-ttl: 7d
+    reminder:
+      scan-interval-ms: 10000
+      compensate-interval-ms: 60000
+      max-pending-per-user: 20
