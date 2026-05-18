@@ -69,4 +69,18 @@ public final class RedisKeyRegistry {
     public static String refreshTokenKey(String token) {
         return "auth:refresh-token:" + token;
     }
+
+    // ========== AI 助手模块 ==========
+
+    public static String aiChatMemoryKey(String sessionId) {
+        return "ai:chat:" + sessionId;
+    }
+
+    public static String aiReminderZset() {
+        return "ai:reminder:zset";
+    }
+
+    public static String aiReminderLock() {
+        return "ai:reminder:lock";
+    }
 }
