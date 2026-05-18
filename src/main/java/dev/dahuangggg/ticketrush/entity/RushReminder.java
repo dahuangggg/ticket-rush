@@ -29,6 +29,7 @@ public class RushReminder {
     private Long id;
 
     private Long userId;
+    private Long skuId;
     private Long eventId;
     private Integer leadMinutes;
     private LocalDateTime triggerAt;
