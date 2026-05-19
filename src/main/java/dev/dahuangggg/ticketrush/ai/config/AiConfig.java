@@ -5,6 +5,7 @@ import dev.dahuangggg.ticketrush.ai.service.ChatAssistant;
 import dev.dahuangggg.ticketrush.ai.tools.EventQueryTools;
 import dev.dahuangggg.ticketrush.ai.tools.OrderQueryTools;
 import dev.dahuangggg.ticketrush.ai.tools.ReminderTools;
+import dev.langchain4j.http.client.jdk.JdkHttpClientBuilder;
 import dev.langchain4j.memory.chat.ChatMemoryProvider;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
@@ -16,13 +17,19 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
+import java.net.http.HttpClient;
+
 @Configuration
 @EnableConfigurationProperties(AiProperties.class)
 public class AiConfig {
 
     @Bean
     public ChatModel chatModel(AiProperties props) {
+        // 强制走 HTTP/1.1：JDK 自带 HttpClient 的 HTTP/2 实现和部分 OpenAI 兼容代理握手时会被 RST_STREAM。
+        JdkHttpClientBuilder httpBuilder = new JdkHttpClientBuilder()
+                .httpClientBuilder(HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1));
         return OpenAiChatModel.builder()
+                .httpClientBuilder(httpBuilder)
                 .baseUrl(props.getOpenai().getBaseUrl())
                 .apiKey(props.getOpenai().getApiKey())
                 .modelName(props.getOpenai().getModel())
