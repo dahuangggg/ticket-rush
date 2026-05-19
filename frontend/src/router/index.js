@@ -3,6 +3,7 @@ import EventList from '../pages/EventList.vue'
 import EventDetail from '../pages/EventDetail.vue'
 import Login from '../pages/Login.vue'
 import MyOrders from '../pages/MyOrders.vue'
+import AiChat from '../pages/AiChat.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -11,7 +12,8 @@ const router = createRouter({
     { path: '/events', component: EventList },
     { path: '/events/:id', component: EventDetail, props: true },
     { path: '/login', component: Login },
-    { path: '/orders', component: MyOrders, meta: { requiresAuth: true } }
+    { path: '/orders', component: MyOrders, meta: { requiresAuth: true } },
+    { path: '/ai', component: AiChat, meta: { requiresAuth: true } }
   ]
 })
 

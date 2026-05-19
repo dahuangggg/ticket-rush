@@ -11,9 +11,16 @@ import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.service.AiServices;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -80,5 +87,36 @@ class AiAssistantServiceIT {
 
         assertThat(answer).contains("已为你设置提醒");
         verify(reminderService).setReminder(7L, 42L, 5);
+    }
+
+    @Test
+    void stream_returnsPartialResponsesAndCompletes() throws Exception {
+        ChatAssistant assistant = AiServices.builder(ChatAssistant.class)
+                .streamingChatModel(new FakeStreamingChatModel())
+                .chatMemoryProvider(memoryId -> MessageWindowChatMemory.withMaxMessages(20))
+                .build();
+
+        List<String> chunks = new ArrayList<>();
+        CountDownLatch done = new CountDownLatch(1);
+
+        assistant.stream("session-1", "你好")
+                .onPartialResponse(chunks::add)
+                .onCompleteResponse(response -> done.countDown())
+                .onError(error -> done.countDown())
+                .start();
+
+        assertThat(done.await(1, TimeUnit.SECONDS)).isTrue();
+        assertThat(chunks).containsExactly("你", "好");
+    }
+
+    static class FakeStreamingChatModel implements StreamingChatModel {
+        @Override
+        public void doChat(ChatRequest request, StreamingChatResponseHandler handler) {
+            handler.onPartialResponse("你");
+            handler.onPartialResponse("好");
+            handler.onCompleteResponse(ChatResponse.builder()
+                    .aiMessage(AiMessage.from("你好"))
+                    .build());
+        }
     }
 }

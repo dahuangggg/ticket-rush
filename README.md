@@ -13,6 +13,7 @@
 | Kafka | — |
 | JWT (jjwt) | 0.13.x |
 | Caffeine | 本地缓存 L1 |
+| LangChain4j | AI function calling |
 
 ## 核心抢票链路
 
@@ -37,7 +38,7 @@
 | 5 | Lua 抢票校验 + Kafka 投递 | ✅ |
 | 6 | Kafka 消费者异步创单（幂等） | ✅ |
 | 7 | 模拟支付 / 用户取消 / 超时扫描 | ✅ |
-| 8 | AI function calling | 🔲 |
+| 8 | AI function calling | ✅ |
 | 9 | RAG 知识库 | 🔲 |
 
 ## 快速启动
@@ -57,6 +58,23 @@ docker compose up -d
 ```
 
 默认端口 `8081`。
+
+AI 客服需要配置 OpenAI 兼容接口：
+
+```bash
+export OPENAI_API_KEY=your_api_key
+# 可选：通过 application.yaml 调整 ticketrush.ai.openai.base-url 和 model
+```
+
+**运行前端**：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+默认端口 `5173`，Vite 会把 `/api` 请求代理到后端。
 
 **初始化库存（示例 SKU 3001）**：
 
@@ -98,6 +116,15 @@ curl http://localhost:8081/api/orders/me -H "Authorization: Bearer $TOKEN"
 | GET  | `/api/orders/me` | 我的订单列表（需登录） |
 | POST | `/api/orders/{id}/pay` | 模拟支付（需登录） |
 | POST | `/api/orders/{id}/cancel` | 取消订单（需登录） |
+| POST | `/api/ai/chat` | AI 客服对话（需登录） |
+| POST | `/api/ai/chat/stream` | AI 客服流式对话（需登录，SSE） |
+| DELETE | `/api/ai/sessions/{sessionId}` | 清空 AI 会话（需登录） |
+
+## AI 客服
+
+前端提供受保护的 `/ai` 页面。未登录访问会跳转到 `/login`，登录后可通过顶部导航进入“AI 客服”。
+
+AI 客服使用 LangChain4j function calling，只能调用后端工具查询演出、票档、订单和提醒等业务能力；涉及抢票时必须进入正常的 Redis Lua + Kafka 请求链路，不会直接修改库存或订单表。
 
 ## 压测
 

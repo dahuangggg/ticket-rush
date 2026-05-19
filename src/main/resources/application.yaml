@@ -7,14 +7,14 @@ spring:
 ticketrush:
   ai:
     openai:
-      base-url: https://api.openai.com/v1
+      base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
       api-key: ${OPENAI_API_KEY:}
-      model: gpt-5.4
-      timeout: 30s
+      model: ${OPENAI_MODEL:gpt-5.4}
+      timeout: ${OPENAI_TIMEOUT:30s}
     chat:
-      memory-max-messages: 20
-      memory-ttl: 7d
+      memory-max-messages: ${AI_CHAT_MEMORY_MAX_MESSAGES:20}
+      memory-ttl: ${AI_CHAT_MEMORY_TTL:7d}
     reminder:
-      scan-interval-ms: 10000
-      compensate-interval-ms: 60000
-      max-pending-per-user: 20
+      scan-interval-ms: ${AI_REMINDER_SCAN_INTERVAL_MS:10000}
+      compensate-interval-ms: ${AI_REMINDER_COMPENSATE_INTERVAL_MS:60000}
+      max-pending-per-user: ${AI_REMINDER_MAX_PENDING_PER_USER:20}

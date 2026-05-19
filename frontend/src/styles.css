@@ -382,6 +382,83 @@ input:focus {
   gap: 10px;
 }
 
+.ai-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 22px;
+}
+
+.chat-panel {
+  display: grid;
+  grid-template-rows: minmax(360px, 58vh) auto auto;
+  padding: 18px;
+}
+
+.chat-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.chat-message {
+  display: grid;
+  gap: 6px;
+  max-width: 76%;
+}
+
+.chat-message span {
+  color: #657386;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.chat-message p {
+  margin: 0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  white-space: pre-wrap;
+}
+
+.chat-message.assistant p {
+  color: #172033;
+  background: #eef2f7;
+}
+
+.chat-message.user {
+  align-self: flex-end;
+}
+
+.chat-message.user span {
+  text-align: right;
+}
+
+.chat-message.user p {
+  color: #fff;
+  background: #dc2626;
+}
+
+.chat-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid #edf1f6;
+}
+
+.ai-side {
+  align-self: start;
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+}
+
+.ai-capabilities {
+  display: grid;
+  gap: 10px;
+}
+
 .empty {
   padding: 24px;
   color: #657386;
@@ -391,7 +468,8 @@ input:focus {
 @media (max-width: 900px) {
   .toolbar,
   .detail-layout,
-  .event-grid {
+  .event-grid,
+  .ai-layout {
     grid-template-columns: 1fr;
   }
 
@@ -427,12 +505,17 @@ input:focus {
   }
 
   .inline-input,
-  .sku-row {
+  .sku-row,
+  .chat-input {
     grid-template-columns: 1fr;
     display: grid;
   }
 
   .sku-action {
     justify-items: start;
+  }
+
+  .chat-message {
+    max-width: 100%;
   }
 }

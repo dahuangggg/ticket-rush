@@ -31,6 +31,7 @@ async function handleLogout() {
       <nav class="nav">
         <RouterLink to="/events">演出</RouterLink>
         <RouterLink to="/orders">我的订单</RouterLink>
+        <RouterLink to="/ai">AI 客服</RouterLink>
         <button v-if="isLoggedIn" class="link-button" type="button" @click="handleLogout">退出</button>
         <RouterLink v-else to="/login">登录</RouterLink>
       </nav>

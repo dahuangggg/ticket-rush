@@ -9,7 +9,9 @@ import dev.langchain4j.http.client.jdk.JdkHttpClientBuilder;
 import dev.langchain4j.memory.chat.ChatMemoryProvider;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -38,12 +40,26 @@ public class AiConfig {
     }
 
     @Bean
+    public StreamingChatModel streamingChatModel(AiProperties props) {
+        JdkHttpClientBuilder httpBuilder = new JdkHttpClientBuilder()
+                .httpClientBuilder(HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1));
+        return OpenAiStreamingChatModel.builder()
+                .httpClientBuilder(httpBuilder)
+                .baseUrl(props.getOpenai().getBaseUrl())
+                .apiKey(props.getOpenai().getApiKey())
+                .modelName(props.getOpenai().getModel())
+                .timeout(props.getOpenai().getTimeout())
+                .build();
+    }
+
+    @Bean
     public ChatMemoryStore chatMemoryStore(StringRedisTemplate redis, AiProperties props) {
         return new RedisChatMemoryStore(redis, props.getChat().getMemoryTtl());
     }
 
     @Bean
     public ChatAssistant chatAssistant(ChatModel model,
+                                       StreamingChatModel streamingModel,
                                        ChatMemoryStore store,
                                        AiProperties props,
                                        EventQueryTools eventTools,
@@ -56,6 +72,7 @@ public class AiConfig {
                 .build();
         return AiServices.builder(ChatAssistant.class)
                 .chatModel(model)
+                .streamingChatModel(streamingModel)
                 .chatMemoryProvider(provider)
                 .tools(eventTools, orderTools, reminderTools)
                 .build();

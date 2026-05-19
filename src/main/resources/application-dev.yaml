@@ -73,10 +73,14 @@ ticket-rush:
     access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:2h}
   ai:
     openai:
-      api-key: ${OPENAI_API_KEY:}
       base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
-      chat-model: ${OPENAI_CHAT_MODEL:gpt-4.1-mini}
-      embedding-model: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
-    chroma:
-      base-url: ${CHROMA_BASE_URL:http://127.0.0.1:8000}
-      collection-name: ${CHROMA_COLLECTION:ticket-rush}
+      api-key: ${OPENAI_API_KEY:}
+      model: ${OPENAI_MODEL:gpt-5.4}
+      timeout: ${OPENAI_TIMEOUT:30s}
+    chat:
+      memory-max-messages: ${AI_CHAT_MEMORY_MAX_MESSAGES:20}
+      memory-ttl: ${AI_CHAT_MEMORY_TTL:7d}
+    reminder:
+      scan-interval-ms: ${AI_REMINDER_SCAN_INTERVAL_MS:10000}
+      compensate-interval-ms: ${AI_REMINDER_COMPENSATE_INTERVAL_MS:60000}
+      max-pending-per-user: ${AI_REMINDER_MAX_PENDING_PER_USER:20}

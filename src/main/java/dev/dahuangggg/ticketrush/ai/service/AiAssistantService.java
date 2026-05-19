@@ -3,6 +3,7 @@ package dev.dahuangggg.ticketrush.ai.service;
 import dev.dahuangggg.ticketrush.infrastructure.redis.RedisKeyRegistry;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.ChatMessageDeserializer;
+import dev.langchain4j.service.TokenStream;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -22,6 +23,11 @@ public class AiAssistantService {
     /** 非流式调用。LangChain4j 内部驱动 tool-call 循环并返回最终文本。 */
     public String chat(Long userId, String sessionId, String message) {
         return assistant.chat(memoryId(userId, sessionId), message);
+    }
+
+    /** 流式调用。LangChain4j 负责 tool-call 循环，前端通过 SSE 逐段接收最终回答。 */
+    public TokenStream stream(Long userId, String sessionId, String message) {
+        return assistant.stream(memoryId(userId, sessionId), message);
     }
 
     /** 读会话历史（直接读 Redis）。 */
