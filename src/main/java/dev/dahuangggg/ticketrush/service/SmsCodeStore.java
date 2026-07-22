@@ -3,8 +3,9 @@ package dev.dahuangggg.ticketrush.service;
 /**
  * 短信验证码存储接口。
  *
- * 这里抽象出接口，是为了让业务层只关心“保存、匹配、删除验证码”这三个动作。
- * 当前实现使用 Redis；测试环境可以替换成内存 Fake；以后也可以换成其他缓存组件。
+ * 这个接口刻意提供“验证并消费”这一项完整业务能力，而不是暴露 get/delete 等
+ * Redis 风格的低层操作。调用方因此不可能误写出“先查询、后删除”的竞态窗口；
+ * Redis 实现可以用 Lua 保证校验、失败计数和一次性消费在同一个原子操作里完成。
  */
 public interface SmsCodeStore {
 
@@ -16,14 +17,17 @@ public interface SmsCodeStore {
     void save(String phone, String code);
 
     /**
-     * 判断用户提交的验证码是否和存储中的验证码一致。
-     */
-    boolean matches(String phone, String code);
-
-    /**
-     * 删除验证码。
+     * 原子校验并消费验证码。
      *
-     * 登录成功后必须删除验证码，保证验证码是一次性的。
+     * <p>验证码正确时必须在返回 {@link VerificationResult#VERIFIED} 前删除；输入错误时
+     * 必须增加失败次数；达到上限后验证码立即失效。这样即使两个登录请求并发到达，
+     * 也最多只有一个请求能够消费成功。</p>
      */
-    void delete(String phone);
+    VerificationResult verifyAndConsume(String phone, String submittedCode);
+
+    enum VerificationResult {
+        VERIFIED,
+        INVALID,
+        TOO_MANY_ATTEMPTS
+    }
 }

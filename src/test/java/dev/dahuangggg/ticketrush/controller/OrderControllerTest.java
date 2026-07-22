@@ -1,6 +1,7 @@
 package dev.dahuangggg.ticketrush.controller;
 
 import dev.dahuangggg.ticketrush.dto.order.OrderDTO;
+import dev.dahuangggg.ticketrush.domain.order.OrderCreationResult;
 import dev.dahuangggg.ticketrush.entity.User;
 import dev.dahuangggg.ticketrush.exception.OrderNotFoundException;
 import dev.dahuangggg.ticketrush.infrastructure.mq.TicketRushMessage;
@@ -116,7 +117,9 @@ class OrderControllerTest {
         );
 
         @Override
-        public void createOrder(TicketRushMessage message) {}
+        public OrderCreationResult createOrder(TicketRushMessage message) {
+            return OrderCreationResult.created(EXISTING_ORDER_ID);
+        }
 
         @Override
         public OrderDTO getById(Long orderId, Long userId) {

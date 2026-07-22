@@ -1,101 +1,123 @@
 package dev.dahuangggg.ticketrush.service.impl;
 
+import dev.dahuangggg.ticketrush.domain.rush.ReservationDecision;
+import dev.dahuangggg.ticketrush.domain.rush.ReservationSnapshot;
+import dev.dahuangggg.ticketrush.domain.rush.ReservationStatus;
 import dev.dahuangggg.ticketrush.dto.rush.TicketRushRequest;
 import dev.dahuangggg.ticketrush.dto.rush.TicketRushResponse;
-import dev.dahuangggg.ticketrush.entity.TicketSku;
+import dev.dahuangggg.ticketrush.entity.RushReservation;
 import dev.dahuangggg.ticketrush.exception.DuplicateOrderException;
+import dev.dahuangggg.ticketrush.exception.ReservationNotFoundException;
 import dev.dahuangggg.ticketrush.exception.SoldOutException;
 import dev.dahuangggg.ticketrush.exception.TicketSkuUnavailableException;
-import dev.dahuangggg.ticketrush.infrastructure.mq.TicketRushMessage;
-import dev.dahuangggg.ticketrush.infrastructure.mq.TicketRushProducer;
-import dev.dahuangggg.ticketrush.infrastructure.redis.RedisKeyRegistry;
-import dev.dahuangggg.ticketrush.mapper.TicketSkuMapper;
-import dev.dahuangggg.ticketrush.service.RedisRollbackService;
-import dev.dahuangggg.ticketrush.infrastructure.redis.RushResult;
+import dev.dahuangggg.ticketrush.service.RushReservationLedger;
+import dev.dahuangggg.ticketrush.service.RushReservationStore;
 import dev.dahuangggg.ticketrush.service.TicketRushService;
-import org.springframework.core.io.ClassPathResource;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
+import dev.dahuangggg.ticketrush.infrastructure.observability.TicketRushMetrics;
 import org.springframework.stereotype.Service;
 
-import java.time.LocalDateTime;
-import java.util.List;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.UUID;
 
+/**
+ * Rush Admission Module。
+ *
+ * <p>HTTP 只需要知道“提交一次带幂等键的请求”；Redis Lua、Cluster key、Outbox 和状态查询
+ * 全部隐藏在后面的 Adapter 中。</p>
+ */
 @Service
 public class TicketRushServiceImpl implements TicketRushService {
 
-    // 用户去重集合的兜底 TTL（秒），防止回滚失败时用户被永久锁定
-    private static final long DEDUP_TTL_SECONDS = 3600;
+    private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
 
-    private final StringRedisTemplate redisTemplate;
-    private final TicketRushProducer producer;
-    private final TicketSkuMapper ticketSkuMapper;
-    private final RedisRollbackService redisRollbackService;
-    private final DefaultRedisScript<Long> rushScript;
+    private final RushReservationStore reservationStore;
+    private final RushReservationLedger reservationLedger;
+    private final TicketRushMetrics metrics;
 
-    public TicketRushServiceImpl(StringRedisTemplate redisTemplate,
-                                 TicketRushProducer producer,
-                                 TicketSkuMapper ticketSkuMapper,
-                                 RedisRollbackService redisRollbackService) {
-        this.redisTemplate = redisTemplate;
-        this.producer = producer;
-        this.ticketSkuMapper = ticketSkuMapper;
-        this.redisRollbackService = redisRollbackService;
-        // DefaultRedisScript 在首次 execute 时发送 EVAL 并由 Spring Data Redis 缓存 SHA，
-        // 后续调用自动切换为 EVALSHA，不需要手动管理脚本 SHA。
-        this.rushScript = new DefaultRedisScript<>();
-        this.rushScript.setLocation(new ClassPathResource("lua/ticket_rush.lua"));
-        this.rushScript.setResultType(Long.class);
+    public TicketRushServiceImpl(RushReservationStore reservationStore,
+                                 RushReservationLedger reservationLedger,
+                                 TicketRushMetrics metrics) {
+        this.reservationStore = reservationStore;
+        this.reservationLedger = reservationLedger;
+        this.metrics = metrics;
     }
 
     @Override
-    public TicketRushResponse rush(Long userId, TicketRushRequest request) {
-        Long skuId = request.skuId();
-        validateSkuAvailable(request);
-
-        List<String> keys = List.of(
-                RedisKeyRegistry.stockKey(skuId),
-                RedisKeyRegistry.orderUserKey(skuId)
+    public TicketRushResponse rush(Long userId, TicketRushRequest request, String idempotencyKey) {
+        String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
+        String reservationId = request.skuId() + "-" + UUID.randomUUID().toString().replace("-", "");
+        ReservationDecision decision = reservationStore.reserve(
+                userId,
+                request.eventId(),
+                request.skuId(),
+                request.quantity(),
+                reservationId,
+                sha256(normalizedKey)
         );
+        metrics.recordRushOutcome(switch (decision.type()) {
+            case RESERVED -> TicketRushMetrics.RushOutcome.RESERVED;
+            case EXISTING -> TicketRushMetrics.RushOutcome.IDEMPOTENT_REPLAY;
+            case SOLD_OUT -> TicketRushMetrics.RushOutcome.SOLD_OUT;
+            case DUPLICATE_USER -> TicketRushMetrics.RushOutcome.DUPLICATE;
+            case SKU_UNAVAILABLE -> TicketRushMetrics.RushOutcome.UNAVAILABLE;
+        });
 
-        Long result = redisTemplate.execute(rushScript, keys, String.valueOf(userId), String.valueOf(DEDUP_TTL_SECONDS));
-
-        switch (RushResult.fromCode(result)) {
-            case SOLD_OUT -> throw new SoldOutException(skuId);
-            case DUPLICATE -> throw new DuplicateOrderException(skuId);
-            case SUCCESS -> { /* continue to Kafka send */ }
-        }
-
-        // Lua 返回 0：扣库存成功，发送 Kafka 消息触发异步创单
-        try {
-            producer.send(new TicketRushMessage(
-                    UUID.randomUUID().toString(),
-                    userId,
-                    request.eventId(),
-                    skuId,
-                    request.quantity()
-            ));
-        } catch (RuntimeException e) {
-            redisRollbackService.rollback(skuId, userId);
-            throw e;
-        }
-
-        return new TicketRushResponse("QUEUED");
+        return switch (decision.type()) {
+            case RESERVED -> new TicketRushResponse(
+                    decision.reservationId(), ReservationStatus.RESERVED.name(), null);
+            case EXISTING -> getReservation(decision.reservationId(), userId);
+            case SOLD_OUT -> throw new SoldOutException(request.skuId());
+            case DUPLICATE_USER -> throw new DuplicateOrderException(request.skuId());
+            case SKU_UNAVAILABLE -> throw new TicketSkuUnavailableException(request.skuId());
+        };
     }
 
-    private void validateSkuAvailable(TicketRushRequest request) {
-        Long skuId = request.skuId();
-        TicketSku sku = ticketSkuMapper.selectById(skuId);
-        if (sku == null
-                || !request.eventId().equals(sku.getEventId())
-                || !Integer.valueOf(TicketSku.STATUS_ON_SALE).equals(sku.getStatus())) {
-            throw new TicketSkuUnavailableException(skuId);
+    @Override
+    public TicketRushResponse getReservation(String reservationId, Long userId) {
+        RushReservation durable = reservationLedger.find(reservationId).orElse(null);
+        if (durable != null) {
+            requireOwner(durable.getUserId(), userId, reservationId);
+            return new TicketRushResponse(
+                    reservationId,
+                    ReservationStatus.fromCode(durable.getStatus()).name(),
+                    durable.getOrderId());
         }
 
-        LocalDateTime now = LocalDateTime.now();
-        if (now.isBefore(sku.getSaleStartTime()) || now.isAfter(sku.getSaleEndTime())) {
-            throw new TicketSkuUnavailableException(skuId);
+        // Relay 尚未把新 Reservation 写入 MySQL 时，Redis 是唯一可见状态。
+        ReservationSnapshot redis = reservationStore.find(reservationId)
+                .orElseThrow(() -> new ReservationNotFoundException(reservationId));
+        requireOwner(redis.userId(), userId, reservationId);
+        return new TicketRushResponse(reservationId, redis.status().name(), redis.orderId());
+    }
+
+    private void requireOwner(Long ownerId, Long currentUserId, String reservationId) {
+        if (!ownerId.equals(currentUserId)) {
+            // 与订单查询一致：不向调用者泄露其他用户的资源是否存在。
+            throw new ReservationNotFoundException(reservationId);
+        }
+    }
+
+    private String normalizeIdempotencyKey(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("Idempotency-Key must not be blank");
+        }
+        String normalized = value.trim();
+        if (normalized.length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
+            throw new IllegalArgumentException("Idempotency-Key must not exceed 128 characters");
+        }
+        return normalized;
+    }
+
+    private String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
         }
     }
 }

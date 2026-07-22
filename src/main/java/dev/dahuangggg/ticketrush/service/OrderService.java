@@ -1,6 +1,7 @@
 package dev.dahuangggg.ticketrush.service;
 
 import dev.dahuangggg.ticketrush.dto.order.OrderDTO;
+import dev.dahuangggg.ticketrush.domain.order.OrderCreationResult;
 import dev.dahuangggg.ticketrush.infrastructure.mq.TicketRushMessage;
 
 import java.util.List;
@@ -10,8 +11,8 @@ import java.util.List;
  */
 public interface OrderService {
 
-    /** 由 Kafka 消费者调用，原子创建订单（含幂等保护）。 */
-    void createOrder(TicketRushMessage message);
+    /** 由 Kafka Adapter 调用，原子提交 inbox、订单和 Reservation Ledger 状态。 */
+    OrderCreationResult createOrder(TicketRushMessage message);
 
     /** 按订单 ID 查询，仅返回属于 userId 的订单，否则抛出 OrderNotFoundException。 */
     OrderDTO getById(Long orderId, Long userId);

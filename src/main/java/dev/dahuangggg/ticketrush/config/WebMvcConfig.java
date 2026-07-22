@@ -3,7 +3,6 @@ package dev.dahuangggg.ticketrush.config;
 import dev.dahuangggg.ticketrush.security.AdminAuthInterceptor;
 import dev.dahuangggg.ticketrush.security.JwtAuthenticationInterceptor;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -17,18 +16,6 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         AdminAuthInterceptor adminAuthInterceptor) {
         this.jwtAuthenticationInterceptor = jwtAuthenticationInterceptor;
         this.adminAuthInterceptor = adminAuthInterceptor;
-    }
-
-    /**
-     * 开发环境跨域配置，允许所有来源访问 API，方便前端本地调试和 Demo 页面使用。
-     */
-    @Override
-    public void addCorsMappings(CorsRegistry registry) {
-        registry.addMapping("/api/**")
-                .allowedOriginPatterns("*")
-                .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-                .allowedHeaders("*")
-                .allowCredentials(false);
     }
 
     /**

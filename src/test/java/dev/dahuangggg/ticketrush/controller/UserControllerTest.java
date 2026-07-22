@@ -98,11 +98,6 @@ class UserControllerTest {
         }
 
         @Override
-        public void touch(String token) {
-            // 内存实现无需处理 TTL，空实现即可
-        }
-
-        @Override
         public void delete(String token) {
             store.remove(token);
         }

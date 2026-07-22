@@ -6,7 +6,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import java.time.Duration;
 
 @Data
-@ConfigurationProperties(prefix = "ticketrush.ai")
+@ConfigurationProperties(prefix = "ticket-rush.ai")
 public class AiProperties {
 
     private OpenAi openai = new OpenAi();

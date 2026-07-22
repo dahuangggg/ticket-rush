@@ -4,7 +4,6 @@ import dev.dahuangggg.ticketrush.ai.memory.RedisChatMemoryStore;
 import dev.dahuangggg.ticketrush.ai.service.ChatAssistant;
 import dev.dahuangggg.ticketrush.ai.tools.EventQueryTools;
 import dev.dahuangggg.ticketrush.ai.tools.OrderQueryTools;
-import dev.dahuangggg.ticketrush.ai.tools.ReminderTools;
 import dev.langchain4j.http.client.jdk.JdkHttpClientBuilder;
 import dev.langchain4j.memory.chat.ChatMemoryProvider;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
@@ -20,6 +19,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.net.http.HttpClient;
+import java.util.List;
 
 @Configuration
 @EnableConfigurationProperties(AiProperties.class)
@@ -57,14 +57,21 @@ public class AiConfig {
         return new RedisChatMemoryStore(redis, props.getChat().getMemoryTtl());
     }
 
+    /**
+     * Production AI tool allowlist. Keep this collection explicit: prompt text is not an
+     * authorization boundary, and no mutating business tool belongs here.
+     */
+    @Bean
+    public ReadOnlyToolAllowlist aiReadOnlyTools(EventQueryTools eventTools, OrderQueryTools orderTools) {
+        return new ReadOnlyToolAllowlist(List.of(eventTools, orderTools));
+    }
+
     @Bean
     public ChatAssistant chatAssistant(ChatModel model,
                                        StreamingChatModel streamingModel,
                                        ChatMemoryStore store,
                                        AiProperties props,
-                                       EventQueryTools eventTools,
-                                       OrderQueryTools orderTools,
-                                       ReminderTools reminderTools) {
+                                       ReadOnlyToolAllowlist readOnlyTools) {
         ChatMemoryProvider provider = memoryId -> MessageWindowChatMemory.builder()
                 .id(memoryId)
                 .maxMessages(props.getChat().getMemoryMaxMessages())
@@ -74,7 +81,15 @@ public class AiConfig {
                 .chatModel(model)
                 .streamingChatModel(streamingModel)
                 .chatMemoryProvider(provider)
-                .tools(eventTools, orderTools, reminderTools)
+                // 只注册查询工具。提醒、支付、取消和抢票都必须由用户在普通业务 API 中
+                // 明确操作，避免模型把自然语言误判成有副作用的命令。
+                .tools(readOnlyTools.tools())
                 .build();
+    }
+
+    public record ReadOnlyToolAllowlist(List<Object> tools) {
+        public ReadOnlyToolAllowlist {
+            tools = List.copyOf(tools);
+        }
     }
 }

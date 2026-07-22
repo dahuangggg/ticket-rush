@@ -43,20 +43,21 @@ public class TicketSkuServiceImpl implements TicketSkuService {
     }
 
     private TicketSkuDTO toDTO(TicketSku sku) {
-        // 优先返回 Redis 实时库存；计数器未初始化时回退到 MySQL 账面库存
+        // Available Inventory 不是普通缓存。Redis key 缺失时返回 null，并明确标记未初始化；
+        // 不能把 MySQL configured stock 伪装成实时可售库存。
         Integer redisStock = stockInitService.getAvailableStock(sku.getId());
-        int stock = redisStock != null ? redisStock : sku.getStock();
 
         return new TicketSkuDTO(
                 sku.getId(),
                 sku.getEventId(),
                 sku.getName(),
                 sku.getPrice(),
-                stock,
+                redisStock,
                 sku.getSaleStartTime(),
                 sku.getSaleEndTime(),
                 sku.getLimitPerUser(),
-                sku.getStatus()
+                sku.getStatus(),
+                redisStock != null
         );
     }
 }

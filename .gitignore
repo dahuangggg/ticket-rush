@@ -35,6 +35,6 @@ build/
 .vscode/
 
 .claude/
-AGENTS.md
 dev-docs/
-docs/
+__pycache__/
+*.pyc

@@ -28,15 +28,6 @@ public interface RefreshTokenStore {
     Long getUserId(String token);
 
     /**
-     * 续期 refreshToken，将其 TTL 重置为初始有效期。
-     *
-     * 每次用户成功调用 /refresh 后调用此方法，实现"滑动过期"：
-     * 只要用户在有效期内有过活跃操作，TTL 就自动顺延，不会被强制踢出。
-     * 14 天的不活跃才会真正过期。
-     */
-    void touch(String token);
-
-    /**
      * 删除 refreshToken。
      *
      * 用户主动退出登录时调用，token 立即从 Redis 中移除。

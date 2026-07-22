@@ -31,7 +31,8 @@ public class AuthController {
      * 当前版本为了本地开发方便，不接真实短信服务：
      * - service 会生成 6 位数字验证码；
      * - 验证码会保存到 Redis，并设置过期时间；
-     * - 验证码会打印到日志，方便开发阶段复制测试。
+     * - 为避免凭证泄露，生产代码不会把验证码明文打印到日志；本地演示应通过专用
+     *   Fake 短信 Adapter 或开发调试端点获取，不能复用生产日志。
      */
     @PostMapping("/sms-code")
     public SimpleResponse sendSmsCode(@Valid @RequestBody SendSmsCodeRequest request) {
@@ -44,8 +45,8 @@ public class AuthController {
      *
      * 业务流程：
      * 1. 前端提交手机号和验证码。
-     * 2. service 校验 Redis 中保存的验证码。
-     * 3. 验证通过后删除验证码，避免同一个验证码被重复使用。
+     * 2. service 通过 Redis Lua 原子校验并消费验证码。
+     * 3. 验证码输错会累计次数，达到上限后立即失效。
      * 4. 签发短效 accessToken（2 小时）+ 长效 refreshToken（14 天）。
      */
     @PostMapping("/login")
@@ -58,6 +59,7 @@ public class AuthController {
      *
      * 前端应在 accessToken 过期前（或收到 401 后）调用此接口，
      * 用 refreshToken 换取新的 accessToken，无需用户重新输入手机号和验证码。
+     * refreshToken 使用固定 TTL，本次刷新不会延长其有效期。
      * 此接口不需要携带 Authorization 请求头，由 WebMvcConfig 排除在拦截器之外。
      */
     @PostMapping("/refresh")

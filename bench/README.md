@@ -1,221 +1,160 @@
-# 压测：热点活动详情查询
+# Reproducible performance experiments
 
-对比三种缓存方案在高并发下的吞吐量和延迟。
+This harness separates three different questions. Their throughput numbers are not directly
+comparable because each scenario measures a different boundary.
 
-## 前置准备
+| Scenario | Command | Measured boundary |
+|---|---|---|
+| MySQL baseline | `bash bench/run.sh mysql` | HTTP event-detail path with Redis and Caffeine disabled |
+| Redis Lua | `bash bench/run.sh lua` | Atomic stock deduction and unique-user recording in Redis only |
+| Full async | `bash bench/run.sh async` | HTTP 202 Reservation-acceptance burst, then post-burst convergence through relay, Kafka, MySQL validation, and order creation |
 
-### 1. 安装 wrk
+Run every scenario with `bash bench/run.sh all`.
 
-```bash
-brew install wrk
-```
+The latest recorded green run is `1784692033_4123146903ca9a80` from 2026-07-22. It passed all
+three scenario-specific correctness gates. See the
+[verification report](../docs/zh-CN/verification-report.md#压测总览) for the exact workload,
+latencies, throughput, cleanup state, and limitations; it is a single-machine observation rather
+than a committed capacity baseline. Raw bundles live under the locally ignored `bench/results/`
+directory and are not published to GitHub; the tracked verification report is the durable summary.
 
-### 2. 写入测试数据
+## Prerequisites
 
-向数据库插入一条热点活动（`is_hot=1`），记录下它的 `id`。
+- Docker Compose and Java 17
+- `wrk` for the MySQL baseline
+- `k6` and `jq` for the full async scenario
+- Python 3 and OpenSSL for fixture generation and result normalization
 
-```sql
-INSERT INTO tb_event (id, title, artist, city, venue, event_time, cover_url, description, is_hot, status, deleted, create_time, update_time)
-VALUES (1000000000001, '周杰伦2026世界巡回演唱会', '周杰伦', '上海', '梅赛德斯奔驰文化中心',
-        '2026-08-01 20:00:00', 'https://example.com/cover.jpg', '演出详情', 1, 1, 0, NOW(), NOW());
-```
-
-把 `bench/run.sh` 中的 `EVENT_ID` 改为实际插入的 ID。
-
-### 3. 三个场景分别启动服务
-
-每次切换场景都需要重启服务：
-
-```bash
-# 场景一：纯 MySQL
-./mvnw spring-boot:run -Dspring-boot.run.profiles=dev,bench-db
-
-# 场景二：MySQL + Redis
-./mvnw spring-boot:run -Dspring-boot.run.profiles=dev,bench-redis
-
-# 场景三：MySQL + Redis + Caffeine（默认）
-./mvnw spring-boot:run -Dspring-boot.run.profiles=dev,bench-full
-```
-
-### 4. 执行压测
+On macOS:
 
 ```bash
-# 单独跑某个场景（等服务启动后执行）
-bash bench/run.sh db
-bash bench/run.sh redis
-bash bench/run.sh full
-
-# 或者三个场景依次执行（需要在每次之间手动重启服务）
-bash bench/run.sh all
+brew install wrk k6 jq
 ```
 
-## 参数说明
+The script starts the required MySQL, Redis, and Kafka services, waits for their health checks,
+creates an exact per-run MySQL database named `ticket_rush_bench_<run-id>`, starts the application
+on port `18081`, warms the measured path, and preserves raw evidence under
+`bench/results/<timestamp>-<run-id>-<scenario>/`. The cleanup trap drops the disposable database on
+normal exit, ordinary command failure, and catchable `INT` or `TERM`. It cannot run after `SIGKILL`,
+host loss, or container-runtime failure. Set `BENCH_KEEP_DATABASE=true` only for debugging; that
+retains the explicitly named benchmark database and makes its later deletion your responsibility.
 
-| 参数 | 值 | 含义 |
-|------|----|------|
-| `-t` | 4 | 4 个 wrk 工作线程（建议 = CPU 核数 / 2） |
-| `-c` | 200 | 保持 200 个并发连接 |
-| `-d` | 30s | 持续压测 30 秒 |
-| `--latency` | — | 输出延迟百分位分布（P50 / P75 / P90 / P99） |
+The full-async scenario also claims Redis logical database 15 with a run-owned sentinel. It refuses
+to run unless that database is empty. Cleanup never calls `FLUSHDB`: it scans and unlinks only the
+run-specific `ticket:{<sku-id>}:*` namespace, deletes the fixed `ticket:rush:outbox:skus` registry
+that this exclusively claimed database created, and deletes the sentinel only when its value still
+equals the generated run ID. Override it with
+`BENCH_REDIS_DATABASE=<0..15>` only when the selected database is reserved for benchmarks. The
+Redis-only scenario likewise uses run-specific `bench:ticket:{...}` keys and removes only those
+exact keys.
 
-## 输出
+Common workload controls can be overridden without editing the script:
 
-```
-Running 30s test @ http://127.0.0.1:8081/api/events/1000000000001
-  4 threads and 200 connections
-
-  Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency    1.23ms    0.85ms  15.23ms   88.12%
-    Req/Sec   42.30k     3.12k   48.50k    72.00%
-
-  Latency Distribution
-     50%    0.98ms
-     75%    1.45ms
-     90%    2.13ms
-     99%    4.82ms
-
-  5,032,145 requests in 30.10s, 1.23GB read
-Requests/sec: 167,181.20
-Transfer/sec: 41.86MB
+```bash
+BENCH_DURATION=30s BENCH_CONNECTIONS=200 bash bench/run.sh mysql
+BENCH_LUA_REQUESTS=100000 BENCH_LUA_CLIENTS=100 bash bench/run.sh lua
+BENCH_ASYNC_USERS=5000 BENCH_ASYNC_VUS=200 bash bench/run.sh async
 ```
 
-- **Latency Avg**：平均响应时间，越低越好
-- **P99**：99% 的请求在这个时间内完成，反映尾延迟，是线上体验的关键指标
-- **Requests/sec**：QPS，越高越好
-- **Stdev**：标准差，越小说明延迟越稳定
+The harness generates a non-overridable run ID from the start time plus 64 bits of randomness. The
+MySQL database, event ID, SKU ID, Redis key namespace, and Kafka group are all derived from that
+identity. Database, event, SKU, and user fixtures use plain `INSERT`; there is no upsert path. The
+harness checks the event, SKU, and entire generated user-ID range before insertion and fails
+instead of modifying an existing row.
 
-## 实测结果（2026-05-14）
+A host-local atomic lock directory rejects concurrent benchmark runs before the empty-broker
+ownership check. This closes the check/start race for the intended local Docker workflow. An
+unclean `SIGKILL` may leave more than the lock: the run-owned MySQL database, Redis sentinel and
+namespace, Kafka topics or group, port `18081`, and an application child process can also survive.
+Use the run ID and result metadata to inspect every one of those exact resources, confirm no process
+still owns the dedicated containers, and clean only the matched run-owned resources before removing
+the stale lock or starting another benchmark.
 
-### 测试环境
+Application-backed scenarios pin the application to the Compose endpoints (`127.0.0.1:13306`,
+`127.0.0.1:16379`, and `127.0.0.1:9092`) and the disposable database. Ambient Spring connection
+overrides are not inherited. The Kafka topic names are currently compile-time constants, so the
+harness takes the conservative alternative: before starting an application scenario it requires a
+dedicated broker with no non-internal topic and no consumer group. It does not accept a custom
+consumer-group name; every group is rooted at `ticket-rush-bench-<run-id>` and uses
+`auto-offset-reset=latest`. When the cleanup trap runs, it deletes only those exact groups. It deletes the four topics
+created by this application only after proving that no unexpected topic/group appeared and that
+the topic record counts equal the benchmark's expected counts. If the ownership proof fails, it
+leaves all topics intact and reports the reason. A broker containing development or production
+traffic is therefore rejected rather than acknowledged as merely a measurement caveat.
 
-| 机器 | Apple M3 Pro (11) @ 4.06 GHz |
-|------|------|
-| 项目 | 配置 |
-| JVM | JDK 17，`-XX:TieredStopAtLevel=1`（IntelliJ 默认，未优化） |
-| MySQL | Docker，映射到本机 13306 |
-| Redis | Docker，映射到本机 16379 |
-| wrk | 4 线程 / 200 并发连接 / 持续 30 秒 |
-| 预热 | 正式测试前先跑 5 秒预热（JIT + 缓存填充） |
-| 活动 | `is_hot=1`，热点活动（逻辑过期缓存路径） |
+## Correctness gates
 
-> **注意**：服务以 IntelliJ 默认 JVM flags（`-XX:TieredStopAtLevel=1`）启动，JIT 编译受限，QPS 比生产部署（`-server` + 完整 JIT）会低。关注各场景间的**相对倍数**，而非绝对值。
+Before trusting `wrk`, the MySQL scenario requires a `200` smoke response whose body contains the
+benchmark event ID. Its parser fails on any non-2xx/3xx response or socket error.
 
----
+The Lua scenario fails if the final Redis stock or unique-user set cardinality differs from the
+submitted request count. Each full-async run derives fresh event, SKU, and user IDs. k6 thresholds
+require every requested iteration to execute exactly once, zero dropped iterations, zero rejected
+responses, and complete accepted/rejected response accounting. The harness then waits for Order
+Intake and asserts:
 
-### wrk 原始输出
+The k6 rate and latency fields describe only the HTTP 202 Reservation-acceptance burst. They are not
+Order Intake commit throughput; convergence to committed orders is checked afterward.
 
-**场景三：MySQL + Redis + Caffeine（热点命中 Caffeine L1）**
-
-```
-Running 30s test @ http://127.0.0.1:8081/api/events/1000000000001
-  4 threads and 200 connections
-  Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     6.83ms    8.71ms 135.16ms   93.68%
-    Req/Sec     9.38k     2.41k   14.15k    70.67%
-  Latency Distribution
-     50%    4.81ms
-     75%    6.18ms
-     90%    9.32ms
-     99%   46.21ms
-  1120261 requests in 30.02s, 724.55MB read
-Requests/sec:  37316.39
-Transfer/sec:     24.14MB
-```
-
-**场景二：MySQL + Redis（热点命中 Redis L2，Caffeine 禁用）**
-
-```
-Running 30s test @ http://127.0.0.1:8082/api/events/1000000000001
-  4 threads and 200 connections
-  Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency    11.63ms   13.27ms 231.31ms   94.52%
-    Req/Sec     5.13k     1.54k   13.72k    68.61%
-  Latency Distribution
-     50%    8.68ms
-     75%   12.00ms
-     90%   17.87ms
-     99%   79.66ms
-  611231 requests in 30.10s, 395.33MB read
-Requests/sec:  20307.87
-Transfer/sec:     13.13MB
+```text
+orders created == HTTP requests accepted
+final Redis stock == initial stock - accepted requests
+Redis buyers == accepted requests
+durable held reservations + active order quantity == accepted requests
+final Redis stock + Redis buyers == configured stock
+Kafka lag for the run-specific consumer group == 0
 ```
 
-**场景一：MySQL only（每次查 DB，缓存全部禁用）**
+HTTP errors, readiness failures, missing tools, and infrastructure commands are not hidden. A
+failed gate exits non-zero instead of publishing a misleading QPS number.
 
+## Result bundle
+
+Every run records:
+
+- UTC time, run ID, Git commit and dirty-file count;
+- host and Java information plus container image IDs;
+- exact non-secret fixture IDs, disposable database disposition, Redis database, and Kafka group;
+- workload parameters and raw `wrk`, `redis-benchmark`, or `k6` output;
+- normalized latency, throughput, executed-iteration, dropped-iteration, and response-accounting
+  summaries.
+
+Artifact availability depends on the measured boundary:
+
+| Artifact | MySQL baseline | Redis Lua | Full async |
+|---|---:|---:|---:|
+| Application log and Prometheus snapshot | yes | no application is started | yes |
+| Raw load-generator output and normalized state/summary | yes | yes | yes |
+| Kafka lag and final MySQL/Redis invariant counts | no | Redis counts only | yes |
+
+Generated JWTs and user SQL are held in a temporary directory and deleted on exit; they are never
+part of the evidence bundle. `metadata.env` records no password, JWT secret, or token.
+
+Repeat measurements and report variability. Keep commit, hardware, JVM, dataset, warm-up, and
+topology constant within a comparison. These experiments provide evidence for a particular setup;
+they are not production-capacity claims or proof of a causal optimization by themselves.
+
+## Test lanes
+
+Fast tests exclude the JUnit `integration` tag and start neither Kafka listeners nor scheduled
+jobs:
+
+```bash
+./mvnw test
 ```
-Running 30s test @ http://127.0.0.1:8082/api/events/1000000000001
-  4 threads and 200 connections
-  Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency    27.78ms   39.24ms 532.51ms   90.68%
-    Req/Sec     2.75k     0.99k    7.52k    62.24%
-  Latency Distribution
-     50%   15.13ms
-     75%   32.37ms
-     90%   63.86ms
-     99%  196.16ms
-  325507 requests in 30.07s, 210.53MB read
-Requests/sec:  10825.44
-Transfer/sec:      7.00MB
+
+The real-service integration lane is executable against the Compose dependencies:
+
+```bash
+docker compose up -d mysql redis kafka
+./mvnw -Pintegration verify
 ```
 
----
+The integration profile configures Kafka but deliberately disables listeners and scheduled workers.
+It validates real MySQL, Redis, and Flyway behavior, not Kafka end-to-end delivery. The command
+intentionally fails when its infrastructure is unavailable; it should not be silently treated as a
+skipped green build.
 
-### 核心指标对比
-
-| 场景 | QPS | P50 | P90 | P99 | 相对 MySQL |
-|------|----:|----:|----:|----:|------------|
-| MySQL only | 10,825 | 15.13ms | 63.86ms | 196.16ms | 基准 1× |
-| MySQL + Redis | 20,307 | 8.68ms | 17.87ms | 79.66ms | **1.9×** |
-| MySQL + Redis + Caffeine | 37,316 | 4.81ms | 9.32ms | 46.21ms | **3.4×** |
-
----
-
-### 性能分析
-
-#### 场景一：MySQL only — QPS 10,825 / P99 196ms
-
-每次请求都穿透到数据库，MySQL 连接池（`maximum-pool-size=20`）成为第一瓶颈。在 200 并发下，大量请求排队等待数据库连接，导致 P99 高达 196ms，且 Stdev（39ms）远大于均值（27ms），说明响应时间极不稳定。
-
-这是开票瞬间不加缓存的真实写照：数百万用户同时刷新活动页，数据库连接被打满，响应时间急剧恶化。
-
-#### 场景二：MySQL + Redis — QPS 20,307 / P99 79ms
-
-加上 Redis 后 QPS 提升 1.9 倍，P99 从 196ms 降至 79ms。热点活动走逻辑过期缓存路径，读的是 Redis 的 `event:detail:hot:{id}` key，不查数据库。
-
-瓶颈转移到网络 I/O：每次请求需要一次本机 Docker→Redis 的 TCP 往返（RTT 约 0.3ms），加上 Lettuce 连接池和序列化/反序列化，平均延迟 11.63ms。P99 为 79ms，说明在高并发下 Redis 连接池偶尔也会产生排队。
-
-Stdev（13ms）明显大于均值，延迟分布仍不够稳定。
-
-#### 场景三：MySQL + Redis + Caffeine — QPS 37,316 / P99 46ms
-
-两级缓存下 QPS 达到 3.4 倍于纯 MySQL，P99 降至 46ms。热点活动命中 Caffeine（JVM 本地内存），完全绕过网络，读操作在纳秒到微秒级完成。
-
-Stdev（8.71ms）接近均值（6.83ms），分布相对 Redis 场景更稳定，但仍有毛刺（Max 135ms）。这来自 JIT 未完全启动（`-XX:TieredStopAtLevel=1`）和 GC 停顿。
-
-**实测结论：Caffeine 命中时的吞吐提升来自消除网络往返，而非 Redis 慢。** Redis 本身很快（P50 仅 8ms），但 Docker 网络 RTT + Lettuce 连接池 + 反序列化的累积，在 200 并发下成为瓶颈。
-
----
-
-### 关键观察
-
-**P99 的意义**
-
-P99 反映的是尾延迟，也是用户实际感知"卡顿"的场景。三个场景的 P99 分别是 196ms / 79ms / 46ms。在开票场景下，P99 196ms 意味着每 100 个用户中就有 1 个等待将近 0.2 秒，这在高频点击场景中是肉眼可感的卡顿。
-
-**Stdev 比 Avg 更能说明稳定性**
-
-MySQL only 的 Stdev（39ms）= 均值（27ms）的 1.4 倍，说明响应时间忽快忽慢。Caffeine 场景的 Stdev（8.71ms）≈ 均值（6.83ms）的 1.3 倍，相对更稳，但还有优化空间。
-
-**当前数据的局限**
-
-- JVM 以 `TieredStopAtLevel=1` 运行（IntelliJ debug/run 默认），C2 JIT 编译器未启动，吞吐量大约只有 `-server` 模式的 60~70%。
-- 数据库和 Redis 都在 Docker 内，有额外的虚拟网络开销。生产环境两者都在同一内网时 RTT 会更低。
-- 单实例测试，未模拟 HikariCP 连接耗尽、Redis 连接满载等极端情况。
-
-**生产部署估算（`-server` JVM + 容器化部署）**
-
-| 场景 | 预估 QPS |
-|------|---------|
-| MySQL only | ~15,000 |
-| MySQL + Redis | ~30,000 |
-| MySQL + Redis + Caffeine | ~60,000+ |
+The 2026-07-22 blank-database gate actually executed 106 Surefire tests and 27 Failsafe integration
+tests successfully. Consult the [backend test evidence](../docs/zh-CN/verification-report.md#后端测试)
+instead of inferring a current pass from this command example.

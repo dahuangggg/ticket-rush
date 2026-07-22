@@ -7,7 +7,7 @@ const sessionId = ref(getOrCreateSessionId())
 const messages = ref([
   {
     role: 'assistant',
-    content: '你好，我可以帮你查询演出、查看订单状态、设置开抢提醒。需要抢票时，我会帮你提交抢票请求，请及时查看订单结果。'
+    content: '你好，我是只读票务助手，可以查询演出、票档和你的订单状态。抢票、支付、取消等操作请在对应业务页面完成。'
   }
 ])
 const input = ref('')
@@ -16,9 +16,9 @@ const error = ref('')
 const chatBody = ref(null)
 
 const quickPrompts = [
-  '帮我找周杰伦上海站的票',
-  '查询我的订单状态',
-  '帮我设置开抢提醒'
+  '上海近期有哪些演出？',
+  '周杰伦上海站有哪些票档？',
+  '我的待支付订单有哪些？'
 ]
 
 function getOrCreateSessionId() {
@@ -72,7 +72,7 @@ async function sendMessage(text = input.value) {
       assistantMessage.content = data.answer || 'AI 服务没有返回内容'
     } catch (fallbackErr) {
       error.value = getErrorMessage(fallbackErr, err.message || 'AI 客服请求失败')
-      assistantMessage.content = '抱歉，AI 客服暂时不可用，请稍后再试。'
+      assistantMessage.content = '抱歉，只读助手暂时不可用，请稍后再试。'
     }
   } finally {
     loading.value = false
@@ -94,7 +94,7 @@ async function resetSession() {
   messages.value = [
     {
       role: 'assistant',
-      content: '已开始新的客服会话。你可以继续查询演出、订单或提醒。'
+      content: '已开始新的会话。你可以继续查询演出、票档或自己的订单。'
     }
   ]
   await scrollToBottom()
@@ -102,66 +102,94 @@ async function resetSession() {
 </script>
 
 <template>
-  <section class="page-head">
+  <section class="page-head ai-page-head">
     <div>
-      <p class="eyebrow">AI 客服</p>
-      <h1>票务助手</h1>
+      <div class="ai-heading-row">
+        <p class="eyebrow">RUSH INTELLIGENCE</p>
+        <span class="readonly-pill"><i></i> 只读模式</span>
+      </div>
+      <h1>问演出，也问订单。</h1>
+      <p class="section-lede">可以查询演出、票档和你自己的订单。不会代你抢票或操作订单。</p>
     </div>
     <button class="secondary-button" type="button" @click="resetSession">新会话</button>
   </section>
 
   <section class="ai-layout">
     <div class="panel chat-panel">
-      <div ref="chatBody" class="chat-body">
+      <div class="chat-topline">
+        <div class="assistant-identity">
+          <span class="assistant-orb" aria-hidden="true">✦</span>
+          <div>
+            <strong>Rush Assistant</strong>
+            <small><i></i> 在线 · 只读</small>
+          </div>
+        </div>
+        <span class="session-label">PRIVATE SESSION</span>
+      </div>
+
+      <div ref="chatBody" class="chat-body" aria-live="polite">
         <article
           v-for="(message, index) in messages"
           :key="index"
           class="chat-message"
           :class="message.role"
         >
-          <span>{{ message.role === 'user' ? '我' : 'AI 客服' }}</span>
-          <p>{{ message.content }}</p>
+          <span>{{ message.role === 'user' ? '你' : '只读助手' }}</span>
+          <p>
+            <template v-if="message.content">{{ message.content }}</template>
+            <span v-else class="typing-dots" aria-label="正在回复"><i></i><i></i><i></i></span>
+          </p>
         </article>
       </div>
 
-      <p v-if="error" class="notice error">{{ error }}</p>
+      <p v-if="error" class="notice error" role="alert">{{ error }}</p>
 
       <form class="chat-input" @submit.prevent="sendMessage()">
         <input
           v-model.trim="input"
           :disabled="loading"
-          placeholder="输入你的票务问题，例如：帮我抢周杰伦上海站580元票"
+          aria-label="询问只读票务助手"
+          placeholder="询问演出、票档或我的订单…"
         />
-        <button class="primary-button" type="submit" :disabled="loading || !input.trim()">
-          {{ loading ? '发送中' : '发送' }}
+        <button class="send-button" type="submit" :disabled="loading || !input.trim()" aria-label="发送消息">
+          <span aria-hidden="true">↑</span>
         </button>
       </form>
+      <p class="composer-note">助手只能读取你的票务信息，关键操作仍由你完成。</p>
     </div>
 
-    <aside class="panel ai-side">
-      <div class="section-title">
-        <div>
-          <p class="eyebrow">可用能力</p>
-          <h2>让客服代办</h2>
+    <aside class="ai-side">
+      <section class="panel prompt-panel">
+        <div class="section-title">
+          <div>
+            <p class="eyebrow">TRY ASKING</p>
+            <h2>你可以这样问</h2>
+          </div>
         </div>
-      </div>
 
-      <div class="ai-capabilities">
-        <button
-          v-for="prompt in quickPrompts"
-          :key="prompt"
-          class="secondary-button full"
-          type="button"
-          :disabled="loading"
-          @click="sendMessage(prompt)"
-        >
-          {{ prompt }}
-        </button>
-      </div>
+        <div class="ai-capabilities">
+          <button
+            v-for="(prompt, index) in quickPrompts"
+            :key="prompt"
+            class="prompt-button"
+            type="button"
+            :disabled="loading"
+            @click="sendMessage(prompt)"
+          >
+            <span>0{{ index + 1 }}</span>
+            <strong>{{ prompt }}</strong>
+            <i aria-hidden="true">↗</i>
+          </button>
+        </div>
+      </section>
 
-      <p class="muted">
-        AI 客服会按正常购票流程处理请求，不会绕过排队、限购和库存校验。
-      </p>
+      <section class="ai-safety-card">
+        <span class="safety-mark" aria-hidden="true">✓</span>
+        <div>
+          <strong>你的决定，由你确认</strong>
+          <p>AI 不会抢票、支付、取消订单、变更库存或设置提醒。</p>
+        </div>
+      </section>
     </aside>
   </section>
 </template>

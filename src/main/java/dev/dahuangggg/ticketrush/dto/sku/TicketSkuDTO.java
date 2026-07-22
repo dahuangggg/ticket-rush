@@ -15,6 +15,7 @@ public record TicketSkuDTO(
         LocalDateTime saleStartTime,
         LocalDateTime saleEndTime,
         Integer limitPerUser,
-        Integer status
+        Integer status,
+        boolean stockInitialized
 ) {
 }

@@ -1,10 +1,8 @@
 spring:
-  config:
+  application:
     name: ticket-rush
-  profiles:
-    active: dev
 
-ticketrush:
+ticket-rush:
   ai:
     openai:
       base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
@@ -14,7 +12,35 @@ ticketrush:
     chat:
       memory-max-messages: ${AI_CHAT_MEMORY_MAX_MESSAGES:20}
       memory-ttl: ${AI_CHAT_MEMORY_TTL:7d}
-    reminder:
-      scan-interval-ms: ${AI_REMINDER_SCAN_INTERVAL_MS:10000}
-      compensate-interval-ms: ${AI_REMINDER_COMPENSATE_INTERVAL_MS:60000}
-      max-pending-per-user: ${AI_REMINDER_MAX_PENDING_PER_USER:20}
+
+  business-zone: ${BUSINESS_ZONE:Asia/Shanghai}
+  reminder:
+    scan-interval-ms: ${REMINDER_SCAN_INTERVAL_MS:10000}
+    compensate-interval-ms: ${REMINDER_COMPENSATE_INTERVAL_MS:60000}
+    max-pending-per-user: ${REMINDER_MAX_PENDING_PER_USER:20}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db,redis,kafka
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: Concert ticket reservation teaching platform

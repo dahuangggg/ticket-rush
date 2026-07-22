@@ -1,154 +1,207 @@
 package dev.dahuangggg.ticketrush.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import dev.dahuangggg.ticketrush.domain.order.OrderCreationResult;
+import dev.dahuangggg.ticketrush.domain.rush.ReservationStatus;
+import dev.dahuangggg.ticketrush.entity.InventoryReleaseIntent;
+import dev.dahuangggg.ticketrush.entity.RushReservation;
 import dev.dahuangggg.ticketrush.entity.TicketOrder;
 import dev.dahuangggg.ticketrush.entity.TicketOrderMsg;
 import dev.dahuangggg.ticketrush.infrastructure.mq.TicketRushMessage;
+import dev.dahuangggg.ticketrush.mapper.InventoryReleaseIntentMapper;
+import dev.dahuangggg.ticketrush.mapper.RushReservationMapper;
 import dev.dahuangggg.ticketrush.mapper.TicketOrderMapper;
 import dev.dahuangggg.ticketrush.mapper.TicketOrderMsgMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.LocalDateTime;
-import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/** 需要真实 MySQL 的 Order Intake 事务与唯一约束集成测试。 */
+@Tag("integration")
 @SpringBootTest
 class OrderServiceTest {
 
-    @Autowired
-    private OrderService orderService;
+    private static final Long USER_ID = 99001L;
+    private static final Long SECOND_USER_ID = 99003L;
+    private static final Long SKU_ID = 3001L;
+    private static final Long EVENT_ID = 2001L;
 
-    @Autowired
-    private TicketOrderMapper ticketOrderMapper;
-
-    @Autowired
-    private TicketOrderMsgMapper ticketOrderMsgMapper;
-
-    @Autowired
-    private JdbcTemplate jdbcTemplate;
-
-    // 测试专用 userId（不与种子数据冲突），sku 3001 price=38000，event 2001
-    private static final Long TEST_USER_ID  = 99001L;
-    private static final Long CANCELED_RETRY_USER_ID = 99003L;
-    private static final Long DUPLICATE_PENDING_USER_ID = 99004L;
-    private static final Long TEST_SKU_ID   = 3001L;
-    private static final Long TEST_EVENT_ID = 2001L;
-
-    private String testMessageId;
+    @Autowired private OrderService orderService;
+    @Autowired private TicketOrderMapper orderMapper;
+    @Autowired private TicketOrderMsgMapper messageMapper;
+    @Autowired private RushReservationMapper reservationMapper;
+    @Autowired private InventoryReleaseIntentMapper intentMapper;
+    @Autowired private JdbcTemplate jdbcTemplate;
 
     @BeforeEach
-    void setup() {
-        testMessageId = UUID.randomUUID().toString();
-        // 物理删除（绕过软删除），保证唯一索引干净，避免测试间干扰
-        jdbcTemplate.update("DELETE FROM tb_ticket_order WHERE user_id = ?", TEST_USER_ID);
-        jdbcTemplate.update("DELETE FROM tb_ticket_order_msg WHERE user_id = ?", TEST_USER_ID);
-        jdbcTemplate.update("DELETE FROM tb_ticket_order WHERE user_id IN (?, ?)",
-                CANCELED_RETRY_USER_ID, DUPLICATE_PENDING_USER_ID);
-        jdbcTemplate.update("DELETE FROM tb_ticket_order_msg WHERE user_id IN (?, ?)",
-                CANCELED_RETRY_USER_ID, DUPLICATE_PENDING_USER_ID);
+    void setUp() {
+        clean();
     }
 
     @AfterEach
-    void cleanup() {
-        jdbcTemplate.update("DELETE FROM tb_ticket_order WHERE user_id = ?", TEST_USER_ID);
-        jdbcTemplate.update("DELETE FROM tb_ticket_order_msg WHERE user_id = ?", TEST_USER_ID);
-        jdbcTemplate.update("DELETE FROM tb_ticket_order WHERE user_id IN (?, ?)",
-                CANCELED_RETRY_USER_ID, DUPLICATE_PENDING_USER_ID);
-        jdbcTemplate.update("DELETE FROM tb_ticket_order_msg WHERE user_id IN (?, ?)",
-                CANCELED_RETRY_USER_ID, DUPLICATE_PENDING_USER_ID);
+    void tearDown() {
+        clean();
     }
 
     @Test
-    void createOrder_insertsOrderAndMsg_onSuccess() {
-        TicketRushMessage msg = new TicketRushMessage(
-                testMessageId, TEST_USER_ID, TEST_EVENT_ID, TEST_SKU_ID, 1);
+    void createOrder_commitsInboxOrderAndLedgerTogether() {
+        TicketRushMessage message = message(USER_ID);
+        insertLedger(message);
 
-        orderService.createOrder(msg);
+        OrderCreationResult result = orderService.createOrder(message);
 
-        // 验证订单创建，状态为待支付，总金额 = 38000 * 1
-        TicketOrder order = ticketOrderMapper.selectOne(
-                new LambdaQueryWrapper<TicketOrder>()
-                        .eq(TicketOrder::getUserId, TEST_USER_ID)
-                        .eq(TicketOrder::getSkuId, TEST_SKU_ID));
-        assertThat(order).isNotNull();
-        assertThat(order.getStatus()).isEqualTo(TicketOrder.STATUS_PENDING);
+        assertThat(result.status()).isEqualTo(OrderCreationResult.Status.CREATED);
+        TicketOrder order = orderMapper.selectById(result.orderId());
+        assertThat(order.getReservationId()).isEqualTo(message.reservationId());
         assertThat(order.getTotalAmount()).isEqualTo(38000L);
-        assertThat(order.getOrderNo()).isNotBlank();
 
-        // 验证消息追踪记录状态为成功
-        TicketOrderMsg orderMsg = ticketOrderMsgMapper.selectOne(
-                new LambdaQueryWrapper<TicketOrderMsg>()
-                        .eq(TicketOrderMsg::getMessageId, testMessageId));
-        assertThat(orderMsg).isNotNull();
-        assertThat(orderMsg.getStatus()).isEqualTo(1);
+        TicketOrderMsg inbox = findInbox(message.messageId());
+        assertThat(inbox.getStatus()).isEqualTo(TicketOrderMsg.STATUS_SUCCESS);
+        assertThat(inbox.getOrderId()).isEqualTo(order.getId());
+        assertThat(findLedger(message.reservationId()).getStatus())
+                .isEqualTo(ReservationStatus.ORDER_CREATED.code());
     }
 
     @Test
-    void createOrder_isIdempotent_whenDuplicateMessageId() {
-        TicketRushMessage msg = new TicketRushMessage(
-                testMessageId, TEST_USER_ID, TEST_EVENT_ID, TEST_SKU_ID, 1);
+    void duplicateMessage_returnsSameOrderWithoutCreatingAnother() {
+        TicketRushMessage message = message(USER_ID);
+        insertLedger(message);
 
-        orderService.createOrder(msg);   // 第一次：正常创单
-        orderService.createOrder(msg);   // 第二次：messageId 重复，幂等跳过
+        OrderCreationResult first = orderService.createOrder(message);
+        OrderCreationResult second = orderService.createOrder(message);
 
-        // 只有一条订单记录
-        Long orderCount = ticketOrderMapper.selectCount(
-                new LambdaQueryWrapper<TicketOrder>()
-                        .eq(TicketOrder::getUserId, TEST_USER_ID)
-                        .eq(TicketOrder::getSkuId, TEST_SKU_ID));
-        assertThat(orderCount).isEqualTo(1);
-
-        // 消息追踪记录仍应只有一条，且状态为成功
-        Long msgCount = ticketOrderMsgMapper.selectCount(
-                new LambdaQueryWrapper<TicketOrderMsg>()
-                        .eq(TicketOrderMsg::getMessageId, testMessageId)
-                        .eq(TicketOrderMsg::getStatus, TicketOrderMsg.STATUS_SUCCESS));
-        assertThat(msgCount).isEqualTo(1);
+        assertThat(second.status()).isEqualTo(OrderCreationResult.Status.ALREADY_CREATED);
+        assertThat(second.orderId()).isEqualTo(first.orderId());
+        assertThat(orderMapper.selectCount(new LambdaQueryWrapper<TicketOrder>()
+                .eq(TicketOrder::getReservationId, message.reservationId()))).isOne();
     }
 
     @Test
-    void createOrder_allowsNewPendingOrderAfterCanceledOrder() {
+    void secondReservationForActiveUser_isRejectedAndGetsReleaseIntent() {
+        TicketRushMessage first = message(USER_ID);
+        insertLedger(first);
+        orderService.createOrder(first);
+
+        TicketRushMessage second = message(USER_ID);
+        insertLedger(second);
+        OrderCreationResult result = orderService.createOrder(second);
+
+        assertThat(result.status()).isEqualTo(OrderCreationResult.Status.REJECTED);
+        assertThat(intentMapper.selectCount(new LambdaQueryWrapper<InventoryReleaseIntent>()
+                .eq(InventoryReleaseIntent::getReservationId, second.reservationId()))).isOne();
+        assertThat(orderMapper.selectCount(new LambdaQueryWrapper<TicketOrder>()
+                .eq(TicketOrder::getUserId, USER_ID))).isOne();
+    }
+
+    @Test
+    void canceledOrder_doesNotBlockNewReservation() {
+        String oldReservationId = reservationId();
         TicketOrder canceled = TicketOrder.builder()
                 .orderNo(UUID.randomUUID().toString().replace("-", ""))
-                .userId(CANCELED_RETRY_USER_ID)
-                .eventId(TEST_EVENT_ID)
-                .skuId(TEST_SKU_ID)
+                .reservationId(oldReservationId)
+                .userId(SECOND_USER_ID)
+                .eventId(EVENT_ID)
+                .skuId(SKU_ID)
                 .quantity(1)
                 .totalAmount(38000L)
                 .status(TicketOrder.STATUS_CANCELED)
                 .cancelTime(LocalDateTime.now())
                 .build();
-        ticketOrderMapper.insert(canceled);
+        orderMapper.insert(canceled);
 
-        TicketRushMessage message = new TicketRushMessage(
-                UUID.randomUUID().toString(), CANCELED_RETRY_USER_ID, TEST_EVENT_ID, TEST_SKU_ID, 1);
+        TicketRushMessage message = message(SECOND_USER_ID);
+        insertLedger(message);
+        OrderCreationResult result = orderService.createOrder(message);
 
-        orderService.createOrder(message);
-
-        List<TicketOrder> orders = ticketOrderMapper.selectList(
-                new LambdaQueryWrapper<TicketOrder>()
-                        .eq(TicketOrder::getUserId, CANCELED_RETRY_USER_ID)
-                        .eq(TicketOrder::getSkuId, TEST_SKU_ID));
-        assertThat(orders).hasSize(2);
-        assertThat(orders).anyMatch(order -> order.getStatus().equals(TicketOrder.STATUS_PENDING));
+        assertThat(result.status()).isEqualTo(OrderCreationResult.Status.CREATED);
+        assertThat(orderMapper.selectCount(new LambdaQueryWrapper<TicketOrder>()
+                .eq(TicketOrder::getUserId, SECOND_USER_ID))).isEqualTo(2);
     }
 
     @Test
-    void createOrder_rejectsSecondPendingOrderForSameUserAndSku() {
-        orderService.createOrder(new TicketRushMessage(
-                UUID.randomUUID().toString(), DUPLICATE_PENDING_USER_ID, TEST_EVENT_ID, TEST_SKU_ID, 1));
+    void mismatchedPayloadRollsBackInboxSoCorrectStableMessageCanRetry() {
+        TicketRushMessage correct = message(SECOND_USER_ID);
+        insertLedger(correct);
+        TicketRushMessage forged = new TicketRushMessage(
+                correct.messageId(), correct.reservationId(), correct.userId(), correct.eventId(),
+                correct.skuId(), correct.quantity(), correct.unitPrice() + 1);
 
-        assertThatThrownBy(() -> orderService.createOrder(new TicketRushMessage(
-                UUID.randomUUID().toString(), DUPLICATE_PENDING_USER_ID, TEST_EVENT_ID, TEST_SKU_ID, 1)))
-                .isInstanceOf(DuplicateKeyException.class);
+        assertThatThrownBy(() -> orderService.createOrder(forged))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(findInbox(correct.messageId())).isNull();
+
+        OrderCreationResult retried = orderService.createOrder(correct);
+        assertThat(retried.status()).isEqualTo(OrderCreationResult.Status.CREATED);
+    }
+
+    @Test
+    void mismatchedMessageAndReservationIdentityCannotPoisonAnotherInbox() {
+        TicketRushMessage legitimate = message(SECOND_USER_ID);
+        insertLedger(legitimate);
+        TicketRushMessage forged = new TicketRushMessage(
+                "3001-someone-elses-message",
+                legitimate.reservationId(),
+                legitimate.userId(),
+                legitimate.eventId(),
+                legitimate.skuId(),
+                legitimate.quantity(),
+                legitimate.unitPrice());
+
+        assertThatThrownBy(() -> orderService.createOrder(forged))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(findInbox(forged.messageId())).isNull();
+        assertThat(findInbox(legitimate.messageId())).isNull();
+
+        assertThat(orderService.createOrder(legitimate).status())
+                .isEqualTo(OrderCreationResult.Status.CREATED);
+    }
+
+    private TicketRushMessage message(Long userId) {
+        String reservationId = reservationId();
+        return new TicketRushMessage(
+                reservationId, reservationId, userId, EVENT_ID, SKU_ID, 1, 38000L);
+    }
+
+    private String reservationId() {
+        return SKU_ID + "-" + UUID.randomUUID().toString().replace("-", "");
+    }
+
+    private void insertLedger(TicketRushMessage message) {
+        reservationMapper.insert(RushReservation.builder()
+                .reservationId(message.reservationId())
+                .userId(message.userId())
+                .eventId(message.eventId())
+                .skuId(message.skuId())
+                .quantity(message.quantity())
+                .unitPrice(message.unitPrice())
+                .status(ReservationStatus.QUEUED.code())
+                .build());
+    }
+
+    private RushReservation findLedger(String reservationId) {
+        return reservationMapper.selectOne(new LambdaQueryWrapper<RushReservation>()
+                .eq(RushReservation::getReservationId, reservationId));
+    }
+
+    private TicketOrderMsg findInbox(String messageId) {
+        return messageMapper.selectOne(new LambdaQueryWrapper<TicketOrderMsg>()
+                .eq(TicketOrderMsg::getMessageId, messageId));
+    }
+
+    private void clean() {
+        jdbcTemplate.update("DELETE FROM tb_inventory_release_intent WHERE user_id IN (?, ?)", USER_ID, SECOND_USER_ID);
+        jdbcTemplate.update("DELETE FROM tb_ticket_order_msg WHERE user_id IN (?, ?)", USER_ID, SECOND_USER_ID);
+        jdbcTemplate.update("DELETE FROM tb_ticket_order WHERE user_id IN (?, ?)", USER_ID, SECOND_USER_ID);
+        jdbcTemplate.update("DELETE FROM tb_rush_reservation WHERE user_id IN (?, ?)", USER_ID, SECOND_USER_ID);
     }
 }

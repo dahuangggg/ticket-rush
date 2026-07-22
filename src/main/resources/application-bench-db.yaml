@@ -1,6 +1,8 @@
 # 压测场景一：纯 MySQL，不走任何缓存
 # 用法：./mvnw spring-boot:run -Dspring-boot.run.profiles=dev,bench-db
 ticket-rush:
+  scheduling:
+    enabled: false
   cache:
     redis-enabled: false        # EventCacheManager 跳过所有 Redis 操作
     caffeine-max-size: 0        # Caffeine 立即驱逐，等效禁用本地缓存
