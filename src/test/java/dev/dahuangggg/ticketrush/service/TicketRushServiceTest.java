@@ -18,6 +18,7 @@ import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +41,7 @@ class TicketRushServiceTest {
     @Autowired private ReservationOutbox reservationOutbox;
     @Autowired private StringRedisTemplate redisTemplate;
     @Autowired private JdbcTemplate jdbcTemplate;
+    @Autowired private Clock clock;
 
     private SkuSnapshot originalSku;
 
@@ -48,7 +50,7 @@ class TicketRushServiceTest {
         originalSku = loadSkuSnapshot();
         clearRedis();
         clearPersistentTestRows();
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(clock);
         jdbcTemplate.update("""
                 UPDATE tb_ticket_sku
                    SET stock = 5, status = 1, event_id = ?, price = 38000,
