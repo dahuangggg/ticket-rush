@@ -26,7 +26,7 @@ export function skuStatusText(status) {
 
 export function orderStatusText(status) {
   return {
-    0: '待支付',
+    0: '待模拟支付',
     1: '已支付',
     2: '已取消',
     3: '已超时'
