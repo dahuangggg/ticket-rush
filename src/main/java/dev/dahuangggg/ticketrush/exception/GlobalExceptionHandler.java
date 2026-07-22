@@ -1,10 +1,12 @@
 package dev.dahuangggg.ticketrush.exception;
 
 import dev.dahuangggg.ticketrush.dto.common.ErrorResponse;
+import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -24,6 +26,12 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.TOO_MANY_REQUESTS)
     public ErrorResponse handleSmsCooldown(SmsCooldownException exception) {
         return new ErrorResponse("SMS_COOLDOWN", exception.getMessage());
+    }
+
+    @ExceptionHandler(SmsCodeAttemptsExceededException.class)
+    @ResponseStatus(HttpStatus.TOO_MANY_REQUESTS)
+    public ErrorResponse handleSmsAttemptsExceeded(SmsCodeAttemptsExceededException exception) {
+        return new ErrorResponse("SMS_ATTEMPTS_EXCEEDED", exception.getMessage());
     }
 
     /**
@@ -56,6 +64,13 @@ public class GlobalExceptionHandler {
         return new ErrorResponse("UNAUTHORIZED", exception.getMessage());
     }
 
+    /** 已登录但权限不足时返回 403，避免前端误以为 token 已经过期。 */
+    @ExceptionHandler(ForbiddenException.class)
+    @ResponseStatus(HttpStatus.FORBIDDEN)
+    public ErrorResponse handleForbidden(ForbiddenException exception) {
+        return new ErrorResponse("FORBIDDEN", exception.getMessage());
+    }
+
     /**
      * 处理请求参数校验错误。
      *
@@ -70,6 +85,34 @@ public class GlobalExceptionHandler {
                 .map(error -> error.getDefaultMessage() == null ? "请求参数错误" : error.getDefaultMessage())
                 .orElse("请求参数错误");
         return new ErrorResponse("BAD_REQUEST", message);
+    }
+
+    /** 处理 @PathVariable 等方法参数上的 Bean Validation 约束。 */
+    @ExceptionHandler(ConstraintViolationException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ErrorResponse handleConstraintViolation(ConstraintViolationException exception) {
+        String message = exception.getConstraintViolations().stream()
+                .findFirst()
+                .map(violation -> violation.getMessage())
+                .orElse("请求参数错误");
+        return new ErrorResponse("BAD_REQUEST", message);
+    }
+
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ErrorResponse handleMissingRequestHeader(MissingRequestHeaderException exception) {
+        return new ErrorResponse("BAD_REQUEST", "请求头缺失");
+    }
+
+    /**
+     * 处理业务入口主动拒绝的非法参数，例如过长的 Idempotency-Key。
+     * 不回传 exception.message，避免把领域内部字段和值暴露给客户端。
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ErrorResponse handleIllegalArgument(IllegalArgumentException exception) {
+        log.debug("Rejected illegal request argument", exception);
+        return new ErrorResponse("BAD_REQUEST", "请求参数错误");
     }
 
     /**
@@ -108,6 +151,18 @@ public class GlobalExceptionHandler {
         return new ErrorResponse("ORDER_NOT_FOUND", exception.getMessage());
     }
 
+    @ExceptionHandler(ReservationNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public ErrorResponse handleReservationNotFound(ReservationNotFoundException exception) {
+        return new ErrorResponse("RESERVATION_NOT_FOUND", exception.getMessage());
+    }
+
+    @ExceptionHandler(InventoryRecoveryRequiredException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public ErrorResponse handleInventoryRecoveryRequired(InventoryRecoveryRequiredException exception) {
+        return new ErrorResponse("INVENTORY_RECOVERY_REQUIRED", exception.getMessage());
+    }
+
     /**
      * 处理订单状态不允许操作的情况（如对已支付订单再次支付）。
      */
@@ -144,6 +199,13 @@ public class GlobalExceptionHandler {
     public ErrorResponse handleKafkaPublish(KafkaPublishException exception) {
         log.error("Kafka publish failed", exception);
         return new ErrorResponse("SERVICE_UNAVAILABLE", "系统繁忙，请稍后重试");
+    }
+
+    @ExceptionHandler(AiServiceUnavailableException.class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    public ErrorResponse handleAiServiceUnavailable(AiServiceUnavailableException exception) {
+        log.warn("AI service unavailable", exception.getCause());
+        return new ErrorResponse("SERVICE_UNAVAILABLE", exception.getMessage());
     }
 
     /**

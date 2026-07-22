@@ -3,7 +3,7 @@ package dev.dahuangggg.ticketrush.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import dev.dahuangggg.ticketrush.dto.reminder.ReminderDTO;
-import dev.dahuangggg.ticketrush.dto.reminder.ReminderToolResult;
+import dev.dahuangggg.ticketrush.dto.reminder.ReminderCreationResponse;
 import dev.dahuangggg.ticketrush.dto.sku.TicketSkuDTO;
 import dev.dahuangggg.ticketrush.entity.RushReminder;
 import dev.dahuangggg.ticketrush.entity.TicketSku;
@@ -44,7 +44,7 @@ public class RushReminderServiceImpl implements RushReminderService {
                                    TicketSkuService skuService,
                                    StringRedisTemplate redis,
                                    Clock clock,
-                                   @Value("${ticketrush.ai.reminder.max-pending-per-user:20}") int maxPendingPerUser) {
+                                   @Value("${ticket-rush.reminder.max-pending-per-user:20}") int maxPendingPerUser) {
         this.mapper = mapper;
         this.skuService = skuService;
         this.redis = redis;
@@ -54,25 +54,24 @@ public class RushReminderServiceImpl implements RushReminderService {
 
     @Override
     @Transactional
-    public ReminderToolResult setReminder(Long userId, Long skuId, Integer leadMinutes) {
+    public ReminderCreationResponse setReminder(Long userId, Long skuId, Integer leadMinutes) {
         TicketSkuDTO sku;
         try {
             sku = skuService.getSkuDetail(skuId);
         } catch (TicketSkuNotFoundException e) {
-            return ReminderToolResult.builder().ok(false).message("票档不存在").build();
+            return ReminderCreationResponse.failure("票档不存在");
         }
 
         LocalDateTime now = LocalDateTime.now(clock);
         if (sku.saleStartTime() == null || !sku.saleStartTime().isAfter(now)
                 || (sku.status() != null && sku.status() == TicketSku.STATUS_ON_SALE)) {
-            return ReminderToolResult.builder().ok(false).message("该票档已开售或已结束").build();
+            return ReminderCreationResponse.failure("该票档已开售或已结束");
         }
         int lead = leadMinutes == null ? DEFAULT_LEAD
                 : Math.max(MIN_LEAD, Math.min(MAX_LEAD, leadMinutes));
         LocalDateTime triggerAt = sku.saleStartTime().minusMinutes(lead);
         if (!triggerAt.isAfter(now)) {
-            return ReminderToolResult.builder().ok(false)
-                    .message("距离开抢时间太近，无法设置").build();
+            return ReminderCreationResponse.failure("距离开抢时间太近，无法设置");
         }
 
         RushReminder existing = mapper.selectOne(new LambdaQueryWrapper<RushReminder>()
@@ -83,8 +82,8 @@ public class RushReminderServiceImpl implements RushReminderService {
                     .eq(RushReminder::getUserId, userId)
                     .eq(RushReminder::getStatus, RushReminder.STATUS_PENDING));
             if (pending != null && pending >= maxPendingPerUser) {
-                return ReminderToolResult.builder().ok(false)
-                        .message("提醒数量已达上限 (" + maxPendingPerUser + ")").build();
+                return ReminderCreationResponse.failure(
+                        "提醒数量已达上限 (" + maxPendingPerUser + ")");
             }
             RushReminder r = RushReminder.builder()
                     .userId(userId).skuId(skuId).eventId(sku.eventId())
@@ -101,12 +100,12 @@ public class RushReminderServiceImpl implements RushReminderService {
             mapper.updateById(existing);
         }
 
-        redis.opsForZSet().add(RedisKeyRegistry.aiReminderZset(),
+        redis.opsForZSet().add(RedisKeyRegistry.reminderDueZset(),
                 String.valueOf(existing.getId()), toEpochMillis(triggerAt));
 
-        return ReminderToolResult.builder().ok(true)
-                .reminderId(existing.getId()).triggerAt(triggerAt)
-                .message("已为你设置提醒：开抢前 " + lead + " 分钟（" + triggerAt + "）通知你").build();
+        return ReminderCreationResponse.success(
+                existing.getId(), triggerAt,
+                "已为你设置提醒：开抢前 " + lead + " 分钟（" + triggerAt + "）通知你");
     }
 
     @Override
@@ -136,7 +135,7 @@ public class RushReminderServiceImpl implements RushReminderService {
                 .eq(RushReminder::getUserId, userId)
                 .set(RushReminder::getStatus, RushReminder.STATUS_CANCELLED));
         if (updated == 0) throw new ReminderNotFoundException(reminderId);
-        redis.opsForZSet().remove(RedisKeyRegistry.aiReminderZset(), String.valueOf(reminderId));
+        redis.opsForZSet().remove(RedisKeyRegistry.reminderDueZset(), String.valueOf(reminderId));
     }
 
     @Override
@@ -148,7 +147,7 @@ public class RushReminderServiceImpl implements RushReminderService {
     }
 
     private double toEpochMillis(LocalDateTime t) {
-        return t.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        return t.atZone(clock.getZone()).toInstant().toEpochMilli();
     }
 
     private ReminderDTO toDto(RushReminder r) {

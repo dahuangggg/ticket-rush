@@ -80,8 +80,8 @@ class TicketSkuControllerTest {
                 return List.of();
             }
             return List.of(
-                    new TicketSkuDTO(3001L, 2001L, "看台票 380", 38000L, 180, SALE_START, SALE_END, 1, 1),
-                    new TicketSkuDTO(3002L, 2001L, "看台票 580", 58000L, 120, SALE_START, SALE_END, 1, 1)
+                    new TicketSkuDTO(3001L, 2001L, "看台票 380", 38000L, 180, SALE_START, SALE_END, 1, 1, true),
+                    new TicketSkuDTO(3002L, 2001L, "看台票 580", 58000L, 120, SALE_START, SALE_END, 1, 1, true)
             );
         }
 
@@ -90,7 +90,7 @@ class TicketSkuControllerTest {
             if (!skuId.equals(3001L)) {
                 throw new TicketSkuNotFoundException(skuId);
             }
-            return new TicketSkuDTO(3001L, 2001L, "看台票 380", 38000L, 180, SALE_START, SALE_END, 1, 1);
+            return new TicketSkuDTO(3001L, 2001L, "看台票 380", 38000L, 180, SALE_START, SALE_END, 1, 1, true);
         }
     }
 }

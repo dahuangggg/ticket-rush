@@ -24,6 +24,10 @@ public class TicketSku {
     public static final int STATUS_ON_SALE = 1;
     public static final int STATUS_SOLD_OUT = 2;
 
+    public static final int STOCK_NEW = 0;
+    public static final int STOCK_OPENED = 1;
+    public static final int STOCK_OPENING = 2;
+
     /**
      * 票种 SKU 主键。
      *
@@ -54,6 +58,9 @@ public class TicketSku {
      */
     private Integer stock;
 
+    /** 0=从未开放；2=首次开放进行中、可重试；1=已开放、key 缺失必须按恢复流程处理。 */
+    private Integer stockInitialized;
+
     /**
      * 售卖开始时间。
      */
@@ -75,7 +82,8 @@ public class TicketSku {
      * 1: 售卖中
      * 2: 已售罄
      *
-     * 当库存为 0 时，由 Module 5 的订单消费者异步更新为已售罄。
+     * 实时可售数量以 Redis stock 为准；当前运行时不会自动把数据库状态写成 2，
+     * status=2 只表示目录侧显式维护的售罄状态。
      */
     private Integer status;
 

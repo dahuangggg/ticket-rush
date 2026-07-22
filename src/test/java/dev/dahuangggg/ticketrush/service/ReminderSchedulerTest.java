@@ -59,7 +59,7 @@ class ReminderSchedulerTest {
 
     @Test
     void scan_skipsWhenLockHeldByOther() {
-        when(ops.setIfAbsent(eq("ai:reminder:lock"), anyString(), any(Duration.class))).thenReturn(false);
+        when(ops.setIfAbsent(eq("reminder:scan:lock"), anyString(), any(Duration.class))).thenReturn(false);
         scheduler.scan();
         verify(zset, never()).rangeByScore(anyString(), anyDouble(), anyDouble(), anyLong(), anyLong());
         verify(service, never()).fire(anyLong());
@@ -67,8 +67,8 @@ class ReminderSchedulerTest {
 
     @Test
     void scan_firesDueReminders() {
-        when(ops.setIfAbsent(eq("ai:reminder:lock"), anyString(), any(Duration.class))).thenReturn(true);
-        when(zset.rangeByScore(eq("ai:reminder:zset"), eq(0d), anyDouble(), eq(0L), eq(100L)))
+        when(ops.setIfAbsent(eq("reminder:scan:lock"), anyString(), any(Duration.class))).thenReturn(true);
+        when(zset.rangeByScore(eq("reminder:due"), eq(0d), anyDouble(), eq(0L), eq(100L)))
                 .thenReturn(Set.of("10", "11"));
         when(service.fire(10L)).thenReturn(true);
         when(service.fire(11L)).thenReturn(false); // already fired by another node
@@ -77,8 +77,8 @@ class ReminderSchedulerTest {
 
         verify(service).fire(10L);
         verify(service).fire(11L);
-        verify(zset).remove("ai:reminder:zset", "10");
-        verify(zset).remove("ai:reminder:zset", "11");
+        verify(zset).remove("reminder:due", "10");
+        verify(zset).remove("reminder:due", "11");
     }
 
     @Test
@@ -91,6 +91,6 @@ class ReminderSchedulerTest {
         scheduler.compensate();
 
         verify(service).fire(55L);
-        verify(zset).remove("ai:reminder:zset", "55");
+        verify(zset).remove("reminder:due", "55");
     }
 }

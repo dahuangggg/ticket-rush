@@ -119,7 +119,7 @@ public class EventServiceImpl implements EventService {
             // 命中热点缓存（可能是旧数据，等待异步重建），直接返回
             // Hot cache path — event is definitely hot; loadedEvent might be null if no DB call was needed
             boolean isHot = loadedEvent.get() == null || Integer.valueOf(1).equals(loadedEvent.get().getIsHot());
-            hotSpotDetector.trackAccessAsync(eventId, isHot, result);
+            hotSpotDetector.trackAccess(eventId, isHot, result);
             return result;
         }
 
@@ -147,7 +147,7 @@ public class EventServiceImpl implements EventService {
         }
 
         boolean isHot = loadedEvent.get() != null && Integer.valueOf(1).equals(loadedEvent.get().getIsHot());
-        hotSpotDetector.trackAccessAsync(eventId, isHot, result);
+        hotSpotDetector.trackAccess(eventId, isHot, result);
         return result;
     }
 

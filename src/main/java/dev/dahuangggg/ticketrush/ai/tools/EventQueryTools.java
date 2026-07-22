@@ -1,6 +1,7 @@
 package dev.dahuangggg.ticketrush.ai.tools;
 
 import dev.dahuangggg.ticketrush.dto.event.EventDTO;
+import dev.dahuangggg.ticketrush.ai.dto.EventSearchResult;
 import dev.dahuangggg.ticketrush.dto.event.EventDetailDTO;
 import dev.dahuangggg.ticketrush.dto.event.EventListRequest;
 import dev.dahuangggg.ticketrush.dto.sku.TicketSkuDTO;
@@ -11,6 +12,7 @@ import dev.langchain4j.agent.tool.Tool;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 
 @Component
@@ -24,32 +26,36 @@ public class EventQueryTools {
         this.skuService = skuService;
     }
 
-    @Tool("根据关键词、城市、日期范围搜索演出活动。返回演出列表：id、标题、艺人、城市、场馆、演出时间。若用户没给具体条件，可不填参数获取全部。")
-    public List<EventDTO> searchEvents(
-            @P("关键词，如艺人名或演出名，可选") String keyword,
+    @Tool("根据演出标题关键词、城市、日期范围搜索演出。返回 ok/error/events；参数错误与没有匹配结果会明确区分。")
+    public EventSearchResult searchEvents(
+            @P("演出标题关键词，可选") String keyword,
             @P("城市名，可选") String city,
             @P("起始日期 yyyy-MM-dd，可选") String fromDate,
             @P("结束日期 yyyy-MM-dd，可选") String toDate) {
-        LocalDate from = parse(fromDate);
-        LocalDate to   = parse(toDate);
-        // 底层 service 只支持单日精确匹配；为兼顾范围过滤，我们以 from 作为单日参数拉取，再用 to 进一步筛
-        LocalDate underlying = from != null ? from : to;
+        LocalDate from;
+        LocalDate to;
+        try {
+            from = parse(fromDate);
+            to = parse(toDate);
+        } catch (DateTimeParseException invalidDate) {
+            return EventSearchResult.invalid("日期格式必须是 yyyy-MM-dd");
+        }
+        if (from != null && to != null && from.isAfter(to)) {
+            return EventSearchResult.invalid("起始日期不能晚于结束日期");
+        }
+
+        // EventService 的 date 是“单日精确匹配”。只有同一天范围才能直接下推；
+        // 其他范围先按城市/标题查询，再在工具边界做闭区间过滤，不能只查 from 那一天。
+        LocalDate underlying = from != null && from.equals(to) ? from : null;
         var req = new EventListRequest(
                 isBlank(city) ? null : city,
                 isBlank(keyword) ? null : keyword,
                 underlying);
         List<EventDTO> all = eventService.listEvents(req);
-        if (from != null && to != null) {
-            return all.stream()
-                    .filter(e -> {
-                        var t = e.eventTime();
-                        if (t == null) return false;
-                        LocalDate d = t.toLocalDate();
-                        return !d.isBefore(from) && !d.isAfter(to);
-                    })
-                    .toList();
-        }
-        return all;
+        List<EventDTO> filtered = all.stream()
+                .filter(event -> inRange(event, from, to))
+                .toList();
+        return EventSearchResult.success(filtered);
     }
 
     @Tool("查询单个演出的详细信息（含描述）")
@@ -66,5 +72,12 @@ public class EventQueryTools {
     private static LocalDate parse(String s) {
         if (isBlank(s)) return null;
         return LocalDate.parse(s.trim());
+    }
+
+    private static boolean inRange(EventDTO event, LocalDate from, LocalDate to) {
+        if (from == null && to == null) return true;
+        if (event.eventTime() == null) return false;
+        LocalDate date = event.eventTime().toLocalDate();
+        return (from == null || !date.isBefore(from)) && (to == null || !date.isAfter(to));
     }
 }

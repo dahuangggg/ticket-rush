@@ -9,10 +9,29 @@ on:
   pull_request:
 
 jobs:
-  test:
-    name: Maven Tests
+  fast-tests:
+    name: Fast Maven Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Run fast tests
+        run: ./mvnw -B test
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -34,8 +53,8 @@ jobs:
           timeout 180 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" ticket-rush-redis)" = "healthy" ]; do sleep 5; done'
           timeout 180 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" ticket-rush-kafka)" = "healthy" ]; do sleep 5; done'
 
-      - name: Run tests
-        run: ./mvnw -B test
+      - name: Run integration profile
+        run: ./mvnw -B -Pintegration verify
 
       - name: Show dependency logs on failure
         if: failure()
@@ -44,3 +63,32 @@ jobs:
       - name: Stop dependencies
         if: always()
         run: docker compose down -v
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=high
+
+      - name: Build frontend
+        run: npm run build

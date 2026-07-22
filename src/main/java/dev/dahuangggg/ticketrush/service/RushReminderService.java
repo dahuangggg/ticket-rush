@@ -1,14 +1,14 @@
 package dev.dahuangggg.ticketrush.service;
 
 import dev.dahuangggg.ticketrush.dto.reminder.ReminderDTO;
-import dev.dahuangggg.ticketrush.dto.reminder.ReminderToolResult;
+import dev.dahuangggg.ticketrush.dto.reminder.ReminderCreationResponse;
 
 import java.util.List;
 
 public interface RushReminderService {
 
-    /** 由 AI 工具调用：设置开抢提醒（按 SKU）。返回结构化结果，不抛业务异常。 */
-    ReminderToolResult setReminder(Long userId, Long skuId, Integer leadMinutes);
+    /** 用户显式设置或更新开抢提醒（按 SKU）；该能力不注册为 AI Tool。 */
+    ReminderCreationResponse setReminder(Long userId, Long skuId, Integer leadMinutes);
 
     /** 列表查询：filterStatus 为 null 不过滤；unreadOnly=true 只返回 read_flag=0。 */
     List<ReminderDTO> list(Long userId, String filterStatus, boolean unreadOnly);

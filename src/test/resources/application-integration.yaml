@@ -1,0 +1,86 @@
+server:
+  port: 0
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:13306}/${MYSQL_DATABASE:ticket_rush}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=${BUSINESS_ZONE:Asia/Shanghai}&characterEncoding=utf8
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:123456}
+    hikari:
+      maximum-pool-size: 8
+      minimum-idle: 1
+      initialization-fail-timeout: 10000
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:16379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3s
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:9092}
+    consumer:
+      group-id: ticket-rush-integration
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+    listener:
+      # Integration tests invoke adapters/services deterministically. A dedicated end-to-end test
+      # may override this together with ticket-rush.scheduling.enabled.
+      auto-startup: false
+      concurrency: 3
+    admin:
+      auto-create: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration,classpath:db/dev
+    baseline-on-migrate: false
+    clean-disabled: true
+  task:
+    scheduling:
+      enabled: false
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: dev.dahuangggg.ticketrush.entity
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: assign_id
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+ticket-rush:
+  scheduling:
+    enabled: false
+  redisson:
+    enabled: false
+  kafka:
+    send-timeout-seconds: 3
+    topic-replication-factor: 1
+    rush-topic-partitions: 12
+    cache-topic-partitions: 3
+  cache:
+    redis-enabled: true
+    hot-detect-threshold: 1000
+    access-count-window-seconds: 60
+    hot-detect-sample-every: 1
+    hot-detect-max-tracked-events: 100
+    hot-detect-flush-interval-ms: 60000
+  auth:
+    sms-code-ttl: 5m
+    refresh-token-ttl: 14d
+  jwt:
+    issuer: ticket-rush-integration
+    secret: ticket-rush-integration-only-secret-at-least-thirty-two-bytes
+    access-token-ttl: 2h
+  observability:
+    metrics-enabled: false

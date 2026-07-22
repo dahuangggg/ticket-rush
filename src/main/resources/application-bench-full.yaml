@@ -1,6 +1,9 @@
 # 压测场景三：MySQL + Redis + Caffeine，完整两级缓存（默认生产配置）
 # 用法：./mvnw spring-boot:run -Dspring-boot.run.profiles=dev,bench-full
 ticket-rush:
+  scheduling:
+    # The full async path includes the Redis Outbox relay, which is a scheduled worker.
+    enabled: true
   cache:
     redis-enabled: true
     caffeine-max-size: 1000     # 和生产默认值一致

@@ -47,16 +47,16 @@ public class ReminderScheduler {
     }
 
     /** 主扫描：ZSet 取到期 → fire → ZREM。 */
-    @Scheduled(fixedDelayString = "${ticketrush.ai.reminder.scan-interval-ms:10000}")
+    @Scheduled(fixedDelayString = "${ticket-rush.reminder.scan-interval-ms:10000}")
     public void scan() {
         String token = UUID.randomUUID().toString();
-        String lockKey = RedisKeyRegistry.aiReminderLock();
+        String lockKey = RedisKeyRegistry.reminderScanLock();
         Boolean acquired = redis.opsForValue().setIfAbsent(lockKey, token, LOCK_TTL);
         if (!Boolean.TRUE.equals(acquired)) return;
         try {
             double now = nowEpochMillis();
             Set<String> due = redis.opsForZSet().rangeByScore(
-                    RedisKeyRegistry.aiReminderZset(), 0d, now, 0L, BATCH);
+                    RedisKeyRegistry.reminderDueZset(), 0d, now, 0L, BATCH);
             if (due == null || due.isEmpty()) return;
             for (String idStr : due) {
                 Long id = Long.parseLong(idStr);
@@ -65,7 +65,7 @@ public class ReminderScheduler {
                 } catch (Exception e) {
                     log.warn("fire reminder failed id={}", id, e);
                 } finally {
-                    redis.opsForZSet().remove(RedisKeyRegistry.aiReminderZset(), idStr);
+                    redis.opsForZSet().remove(RedisKeyRegistry.reminderDueZset(), idStr);
                 }
             }
         } finally {
@@ -76,7 +76,7 @@ public class ReminderScheduler {
     }
 
     /** 补偿：直接查 MySQL PENDING 且过期的，兜底 Redis 丢数据。 */
-    @Scheduled(fixedDelayString = "${ticketrush.ai.reminder.compensate-interval-ms:60000}")
+    @Scheduled(fixedDelayString = "${ticket-rush.reminder.compensate-interval-ms:60000}")
     public void compensate() {
         LocalDateTime now = LocalDateTime.now(clock);
         var pending = mapper.selectList(new LambdaQueryWrapper<RushReminder>()
@@ -86,7 +86,7 @@ public class ReminderScheduler {
         for (RushReminder r : pending) {
             try {
                 if (service.fire(r.getId())) {
-                    redis.opsForZSet().remove(RedisKeyRegistry.aiReminderZset(), String.valueOf(r.getId()));
+                    redis.opsForZSet().remove(RedisKeyRegistry.reminderDueZset(), String.valueOf(r.getId()));
                 }
             } catch (Exception e) {
                 log.warn("compensate fire failed id={}", r.getId(), e);
@@ -95,6 +95,6 @@ public class ReminderScheduler {
     }
 
     private double nowEpochMillis() {
-        return LocalDateTime.now(clock).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        return LocalDateTime.now(clock).atZone(clock.getZone()).toInstant().toEpochMilli();
     }
 }

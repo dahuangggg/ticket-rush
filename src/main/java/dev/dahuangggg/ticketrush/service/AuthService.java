@@ -25,7 +25,7 @@ public interface AuthService {
      * 使用 refreshToken 换取新的 accessToken。
      *
      * refreshToken 有效时，签发一个新的 accessToken 返回给客户端。
-     * refreshToken 本身不更新（不做 token rotation），其 TTL 保持不变。
+     * 当前教学版本选择固定 TTL：refreshToken 本身不更新，TTL 也不会因活跃而延长。
      * 如果 refreshToken 无效或已过期，抛出 InvalidRefreshTokenException → 401。
      */
     LoginResponse refresh(String refreshToken);

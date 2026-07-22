@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import dev.dahuangggg.ticketrush.infrastructure.cache.EventDetailLocalValue;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -38,14 +39,13 @@ public class CaffeineConfig {
      * 主要作用是在 Redis 故障或高并发场景下减少对 Redis 的请求压力。
      * TTL 较短是为了减少本地缓存和 Redis 之间的数据不一致窗口。
      *
-     * key: eventId, value: JSON 字符串（与 Redis 保持相同格式，避免二次序列化）
-     */
-    /**
+     * key: eventId, value: 带 normal/hot 类型的 JSON 包装值，避免两个读取路径互相误判。
+     *
      * maximumSize=0 时 Caffeine 立即驱逐所有条目，相当于禁用本地缓存。
      * bench-db 和 bench-redis profile 通过设置 ticket-rush.cache.caffeine-max-size=0 来禁用。
      */
     @Bean
-    public Cache<Long, String> eventDetailLocalCache(
+    public Cache<Long, EventDetailLocalValue> eventDetailLocalCache(
             @Value("${ticket-rush.cache.caffeine-max-size:1000}") int maxSize) {
         return Caffeine.newBuilder()
                 .maximumSize(maxSize)

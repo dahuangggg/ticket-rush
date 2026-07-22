@@ -13,7 +13,7 @@ import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 
-/** AI 助手设置的开抢提醒，对应 tb_rush_reminder。 */
+/** 用户通过普通业务 API 设置的开抢提醒，对应 tb_rush_reminder。 */
 @Data
 @Builder
 @NoArgsConstructor

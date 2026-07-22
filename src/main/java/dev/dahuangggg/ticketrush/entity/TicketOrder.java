@@ -44,6 +44,9 @@ public class TicketOrder {
      */
     private String orderNo;
 
+    /** 触发该订单的 Reservation，唯一且可用于全链路追踪。 */
+    private String reservationId;
+
     /**
      * 下单用户 ID。
      */

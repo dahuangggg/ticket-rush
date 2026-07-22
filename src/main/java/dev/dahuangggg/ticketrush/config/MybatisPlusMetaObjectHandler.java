@@ -4,10 +4,17 @@ import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
 import org.apache.ibatis.reflection.MetaObject;
 import org.springframework.stereotype.Component;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
 
 @Component
 public class MybatisPlusMetaObjectHandler implements MetaObjectHandler {
+
+    private final Clock clock;
+
+    public MybatisPlusMetaObjectHandler(Clock clock) {
+        this.clock = clock;
+    }
 
     /**
      * 插入数据时自动填充公共时间字段。
@@ -22,7 +29,7 @@ public class MybatisPlusMetaObjectHandler implements MetaObjectHandler {
      */
     @Override
     public void insertFill(MetaObject metaObject) {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(clock);
         strictInsertFill(metaObject, "createTime", LocalDateTime.class, now);
         strictInsertFill(metaObject, "updateTime", LocalDateTime.class, now);
     }
@@ -35,6 +42,6 @@ public class MybatisPlusMetaObjectHandler implements MetaObjectHandler {
      */
     @Override
     public void updateFill(MetaObject metaObject) {
-        strictUpdateFill(metaObject, "updateTime", LocalDateTime.class, LocalDateTime.now());
+        strictUpdateFill(metaObject, "updateTime", LocalDateTime.class, LocalDateTime.now(clock));
     }
 }

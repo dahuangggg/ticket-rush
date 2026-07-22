@@ -6,6 +6,7 @@ import dev.dahuangggg.ticketrush.service.RefreshTokenStore;
 import dev.dahuangggg.ticketrush.service.SmsCodeStore;
 import dev.dahuangggg.ticketrush.service.UserService;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -41,6 +42,12 @@ class AuthControllerTest {
 
     @Autowired
     private FakeRefreshTokenStore refreshTokenStore;
+
+    @BeforeEach
+    void resetFakes() {
+        smsCodeStore.reset();
+        userService.lastLoginPhone = null;
+    }
 
     @Test
     void sendSmsCodeStoresCodeForPhone() throws Exception {
@@ -78,7 +85,8 @@ class AuthControllerTest {
                 .andExpect(jsonPath("$.expiresIn").value(7200))
                 .andExpect(jsonPath("$.refreshToken", not(blankOrNullString())));
 
-        assertThat(smsCodeStore.deletedPhone).isEqualTo("13800138000");
+        assertThat(smsCodeStore.consumedPhone).isEqualTo("13800138000");
+        assertThat(smsCodeStore.savedCode).isNull();
         assertThat(userService.lastLoginPhone).isEqualTo("13800138000");
     }
 
@@ -145,6 +153,24 @@ class AuthControllerTest {
                 .andExpect(jsonPath("$.message").value("验证码错误或已过期"));
     }
 
+    @Test
+    void loginAfterTooManySmsFailuresReturnsTooManyRequests() throws Exception {
+        smsCodeStore.forcedResult = SmsCodeStore.VerificationResult.TOO_MANY_ATTEMPTS;
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "phone": "13800138000",
+                                  "code": "000000"
+                                }
+                                """))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.code").value("SMS_ATTEMPTS_EXCEEDED"));
+
+        assertThat(userService.lastLoginPhone).isNull();
+    }
+
     @TestConfiguration
     static class AuthControllerTestConfig {
 
@@ -171,7 +197,15 @@ class AuthControllerTest {
 
         private String savedPhone;
         private String savedCode;
-        private String deletedPhone;
+        private String consumedPhone;
+        private VerificationResult forcedResult;
+
+        void reset() {
+            savedPhone = null;
+            savedCode = null;
+            consumedPhone = null;
+            forcedResult = null;
+        }
 
         @Override
         public void save(String phone, String code) {
@@ -180,13 +214,14 @@ class AuthControllerTest {
         }
 
         @Override
-        public boolean matches(String phone, String code) {
-            return phone.equals(savedPhone) && code.equals(savedCode);
-        }
-
-        @Override
-        public void delete(String phone) {
-            this.deletedPhone = phone;
+        public VerificationResult verifyAndConsume(String phone, String code) {
+            this.consumedPhone = phone;
+            if (forcedResult != null) return forcedResult;
+            if (phone.equals(savedPhone) && code.equals(savedCode)) {
+                savedCode = null;
+                return VerificationResult.VERIFIED;
+            }
+            return VerificationResult.INVALID;
         }
     }
 
@@ -204,11 +239,6 @@ class AuthControllerTest {
         @Override
         public Long getUserId(String token) {
             return store.get(token);
-        }
-
-        @Override
-        public void touch(String token) {
-            // 内存实现无需处理 TTL，空实现即可
         }
 
         @Override

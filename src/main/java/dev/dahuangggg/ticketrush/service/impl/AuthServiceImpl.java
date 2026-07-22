@@ -4,6 +4,7 @@ import dev.dahuangggg.ticketrush.dto.auth.LoginResponse;
 import dev.dahuangggg.ticketrush.entity.User;
 import dev.dahuangggg.ticketrush.exception.InvalidRefreshTokenException;
 import dev.dahuangggg.ticketrush.exception.InvalidSmsCodeException;
+import dev.dahuangggg.ticketrush.exception.SmsCodeAttemptsExceededException;
 import dev.dahuangggg.ticketrush.security.JwtTokenService;
 import dev.dahuangggg.ticketrush.service.AuthService;
 import dev.dahuangggg.ticketrush.service.RefreshTokenStore;
@@ -42,38 +43,49 @@ public class AuthServiceImpl implements AuthService {
      * 这里使用 SecureRandom 生成 0 到 999999 之间的随机数，
      * 再用 %06d 补齐成 6 位数字字符串，例如 42 会变成 000042。
      *
-     * 当前没有接入真实短信平台，所以验证码只保存到 Redis 并输出日志。
+     * 当前没有接入真实短信平台，所以验证码只保存到 Redis；日志只记录手机号，
+     * 不记录验证码明文，避免共享日志成为新的登录凭证泄露面。
      * 后续接入短信平台时，可以在 smsCodeStore.save 后调用短信供应商 SDK。
      */
     @Override
     public void sendSmsCode(String phone) {
         String code = String.format("%06d", RANDOM.nextInt(1_000_000));
         smsCodeStore.save(phone, code);
-        log.info("SMS verification code generated for phone={}", phone);
+        log.info("SMS verification code generated for phone={}", maskPhone(phone));
     }
 
     /**
      * 使用手机号和短信验证码登录。
      *
      * 关键业务点：
-     * 1. 先校验验证码是否正确。验证码不存在、过期、或输入错误，都视为登录失败。
+     * 1. 原子校验并消费验证码。正确的验证码也只能被一个并发请求使用一次。
      * 2. 根据手机号查询或创建 tb_user 用户记录。
-     * 3. 用户记录准备成功后删除验证码，避免数据库短暂失败时提前消费验证码。
-     * 4. 签发短效 accessToken（JWT）+ 长效 refreshToken（随机 UUID，存 Redis）。
+     * 3. 签发短效 accessToken（JWT）+ 256-bit 加密安全随机 refreshToken。
+     * 4. Redis 只保存 refreshToken 的 SHA-256 摘要，避免存储泄露后直接被当作凭证使用。
      * 5. 返回 tokenType=Bearer，前端后续请求可以放到 Authorization 请求头里。
      */
     @Override
     public LoginResponse login(String phone, String code) {
-        if (!smsCodeStore.matches(phone, code)) {
+        SmsCodeStore.VerificationResult result = smsCodeStore.verifyAndConsume(phone, code);
+        if (result == SmsCodeStore.VerificationResult.TOO_MANY_ATTEMPTS) {
+            throw new SmsCodeAttemptsExceededException();
+        }
+        if (result != SmsCodeStore.VerificationResult.VERIFIED) {
             throw new InvalidSmsCodeException();
         }
 
         User user = userService.findOrCreateByPhone(phone);
-        smsCodeStore.delete(phone);
 
         JwtTokenService.TokenPair tokenPair = jwtTokenService.issueAccessToken(user);
         String refreshToken = refreshTokenStore.issue(user.getId());
         return new LoginResponse(tokenPair.accessToken(), "Bearer", tokenPair.expiresIn(), refreshToken);
+    }
+
+    private static String maskPhone(String phone) {
+        if (phone == null || phone.length() < 7) {
+            return "***";
+        }
+        return phone.substring(0, 3) + "****" + phone.substring(phone.length() - 4);
     }
 
     /**
@@ -87,7 +99,8 @@ public class AuthServiceImpl implements AuthService {
      *
      * 注意：refreshToken 的 TTL 是固定的，不会因为每次刷新而重置。
      * 用户如果需要"永不过期"，需要在 refreshToken 即将到期前重新登录。
-     * 如需实现 TTL 随活跃度延长，可在此处调用 refreshTokenStore.issue 重新签发并替换旧 token（token rotation）。
+     * 更高级的实现可以使用“原子轮换 + 重放检测”，但不能只做简单滑动续期，
+     * 否则被盗 token 只要持续使用就可能永久有效。
      */
     @Override
     public LoginResponse refresh(String refreshToken) {
@@ -102,10 +115,6 @@ public class AuthServiceImpl implements AuthService {
             refreshTokenStore.delete(refreshToken);
             throw new InvalidRefreshTokenException();
         }
-
-        // 续期：每次成功换取 accessToken 后重置 refreshToken 的 TTL，
-        // 实现"滑动过期"——只要用户在有效期内活跃，就不会被强制踢出。
-        refreshTokenStore.touch(refreshToken);
 
         JwtTokenService.TokenPair tokenPair = jwtTokenService.issueAccessToken(user);
         return new LoginResponse(tokenPair.accessToken(), "Bearer", tokenPair.expiresIn(), refreshToken);

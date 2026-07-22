@@ -16,8 +16,8 @@ import java.time.LocalDateTime;
 /**
  * Kafka 消息追踪实体，对应数据库 tb_ticket_order_msg。
  *
- * 消费者处理每条抢票消息前先写入此表；message_id 唯一索引是幂等门卫：
- * 插入成功则继续创单，DuplicateKeyException 则跳过，防止 Kafka 重试导致重复下单。
+ * 消息记录、订单和 SUCCESS 状态必须在同一个本地事务中提交。
+ * 只有已经 SUCCESS 的重复消息才允许直接跳过。
  * status: 0 待处理 / 1 成功 / 2 失败
  */
 @Data
@@ -46,6 +46,9 @@ public class TicketOrderMsg {
      */
     private String messageId;
 
+    /** 对应的业务 Reservation ID。 */
+    private String reservationId;
+
     /**
      * 用户 ID。
      */
@@ -65,6 +68,9 @@ public class TicketOrderMsg {
      * 购票数量。
      */
     private Integer quantity;
+
+    /** 成功创建的订单 ID；PENDING/FAILED 时为空。 */
+    private Long orderId;
 
     /**
      * 处理状态。

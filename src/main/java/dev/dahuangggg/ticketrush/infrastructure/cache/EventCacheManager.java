@@ -6,20 +6,25 @@ import com.github.benmanes.caffeine.cache.Cache;
 import dev.dahuangggg.ticketrush.dto.event.EventDetailDTO;
 import dev.dahuangggg.ticketrush.dto.event.EventDTO;
 import dev.dahuangggg.ticketrush.infrastructure.redis.RedisKeyRegistry;
+import dev.dahuangggg.ticketrush.infrastructure.observability.TicketRushMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.core.io.ClassPathResource;
 import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Component;
 
 import org.springframework.beans.factory.annotation.Value;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.UUID;
 import java.util.function.Supplier;
 
 @Component
@@ -43,23 +48,33 @@ public class EventCacheManager {
     private static final Duration LOGICAL_EXPIRE_DURATION = Duration.ofMinutes(30);
 
     private final StringRedisTemplate redisTemplate;
-    private final Cache<Long, String> eventDetailLocalCache;
+    private final Cache<Long, EventDetailLocalValue> eventDetailLocalCache;
     private final Cache<String, String> eventListLocalCache;
     private final ObjectMapper objectMapper;
+    private final DefaultRedisScript<Long> releaseLockScript;
+    private final TicketRushMetrics metrics;
+    private final Clock clock;
 
     // bench-db profile 将此值设为 false 以禁用 Redis，模拟纯 DB 场景
     private final boolean redisEnabled;
 
     public EventCacheManager(StringRedisTemplate redisTemplate,
-                             Cache<Long, String> eventDetailLocalCache,
+                             Cache<Long, EventDetailLocalValue> eventDetailLocalCache,
                              Cache<String, String> eventListLocalCache,
                              ObjectMapper objectMapper,
+                             TicketRushMetrics metrics,
+                             Clock clock,
                              @Value("${ticket-rush.cache.redis-enabled:true}") boolean redisEnabled) {
         this.redisTemplate = redisTemplate;
         this.eventDetailLocalCache = eventDetailLocalCache;
         this.eventListLocalCache = eventListLocalCache;
         this.objectMapper = objectMapper;
+        this.metrics = metrics;
+        this.clock = clock;
         this.redisEnabled = redisEnabled;
+        this.releaseLockScript = new DefaultRedisScript<>();
+        this.releaseLockScript.setLocation(new ClassPathResource("lua/release_lock.lua"));
+        this.releaseLockScript.setResultType(Long.class);
         this.rebuildExecutor = Executors.newFixedThreadPool(4, r -> {
             Thread t = new Thread(r, "cache-rebuild");
             t.setDaemon(true);
@@ -98,32 +113,46 @@ public class EventCacheManager {
      */
     public EventDetailDTO getNormalEventDetail(Long eventId, Supplier<EventDetailDTO> dbLoader) {
         // 1. 查 Caffeine 本地缓存
-        String localJson = eventDetailLocalCache.getIfPresent(eventId);
-        if (localJson != null) {
-            return deserialize(localJson, EventDetailDTO.class);
+        EventDetailLocalValue local = eventDetailLocalCache.getIfPresent(eventId);
+        if (local != null && !local.hot()) {
+            EventDetailDTO cached = deserialize(local.json(), EventDetailDTO.class);
+            if (cached != null) {
+                return cached;
+            }
+            eventDetailLocalCache.invalidate(eventId);
         }
 
         // 2. 查 Redis（bench-db profile 下跳过）
         if (redisEnabled) {
             String redisJson = redisTemplate.opsForValue().get(RedisKeyRegistry.eventDetailKey(eventId));
             if (redisJson != null) {
-                eventDetailLocalCache.put(eventId, redisJson);
-                return deserialize(redisJson, EventDetailDTO.class);
+                EventDetailDTO cached = deserialize(redisJson, EventDetailDTO.class);
+                if (cached != null) {
+                    eventDetailLocalCache.put(eventId, EventDetailLocalValue.normal(redisJson));
+                    return cached;
+                }
+                // 损坏的缓存不能被当成“活动不存在”，否则上层会再写入空值标记并制造假 404。
+                redisTemplate.delete(RedisKeyRegistry.eventDetailKey(eventId));
             }
         }
 
         // 3. 缓存未命中，尝试互斥锁重建（最多重试 3 次）
         if (redisEnabled) {
             for (int i = 0; i < 3; i++) {
-                Boolean locked = redisTemplate.opsForValue()
-                        .setIfAbsent(RedisKeyRegistry.eventLockKey(eventId), "1", LOCK_TTL);
+                String lockKey = RedisKeyRegistry.eventLockKey(eventId);
+                String lockToken = tryAcquireLock(lockKey);
 
-                if (Boolean.TRUE.equals(locked)) {
+                if (lockToken != null) {
                     try {
                         String doubleCheckJson = redisTemplate.opsForValue().get(RedisKeyRegistry.eventDetailKey(eventId));
                         if (doubleCheckJson != null) {
-                            eventDetailLocalCache.put(eventId, doubleCheckJson);
-                            return deserialize(doubleCheckJson, EventDetailDTO.class);
+                            EventDetailDTO cached = deserialize(doubleCheckJson, EventDetailDTO.class);
+                            if (cached != null) {
+                                eventDetailLocalCache.put(
+                                        eventId, EventDetailLocalValue.normal(doubleCheckJson));
+                                return cached;
+                            }
+                            redisTemplate.delete(RedisKeyRegistry.eventDetailKey(eventId));
                         }
                         EventDetailDTO dto = dbLoader.get();
                         if (dto != null) {
@@ -133,11 +162,11 @@ public class EventCacheManager {
                             redisTemplate.opsForValue().set(
                                     RedisKeyRegistry.eventDetailKey(eventId), json,
                                     DETAIL_TTL_BASE.plusSeconds(jitterSeconds));
-                            eventDetailLocalCache.put(eventId, json);
+                            eventDetailLocalCache.put(eventId, EventDetailLocalValue.normal(json));
                         }
                         return dto;
                     } finally {
-                        redisTemplate.delete(RedisKeyRegistry.eventLockKey(eventId));
+                        releaseLock(lockKey, lockToken);
                     }
                 }
 
@@ -149,8 +178,12 @@ public class EventCacheManager {
 
                 String retryJson = redisTemplate.opsForValue().get(RedisKeyRegistry.eventDetailKey(eventId));
                 if (retryJson != null) {
-                    eventDetailLocalCache.put(eventId, retryJson);
-                    return deserialize(retryJson, EventDetailDTO.class);
+                    EventDetailDTO cached = deserialize(retryJson, EventDetailDTO.class);
+                    if (cached != null) {
+                        eventDetailLocalCache.put(eventId, EventDetailLocalValue.normal(retryJson));
+                        return cached;
+                    }
+                    redisTemplate.delete(RedisKeyRegistry.eventDetailKey(eventId));
                 }
             }
         }
@@ -176,9 +209,13 @@ public class EventCacheManager {
      */
     public EventDetailDTO getHotEventDetail(Long eventId, Supplier<EventDetailDTO> dbLoader) {
         // 1. 查 Caffeine
-        String localJson = eventDetailLocalCache.getIfPresent(eventId);
-        if (localJson != null) {
-            return deserialize(localJson, EventDetailDTO.class);
+        EventDetailLocalValue local = eventDetailLocalCache.getIfPresent(eventId);
+        if (local != null && local.hot()) {
+            EventDetailDTO cached = deserialize(local.json(), EventDetailDTO.class);
+            if (cached != null) {
+                return cached;
+            }
+            eventDetailLocalCache.invalidate(eventId);
         }
 
         // 2. 查 Redis（bench-db profile 下跳过，直接穿透到 DB）
@@ -192,22 +229,24 @@ public class EventCacheManager {
 
         LogicalExpireValue<EventDetailDTO> wrapper = deserializeLogical(redisJson, EventDetailDTO.class);
         if (wrapper == null) {
+            redisTemplate.delete(RedisKeyRegistry.eventHotDetailKey(eventId));
             return null;
         }
 
         EventDetailDTO data = wrapper.data();
 
-        if (LocalDateTime.now().isBefore(wrapper.expireAt())) {
+        if (LocalDateTime.now(clock).isBefore(wrapper.expireAt())) {
             // 逻辑未过期，写入 Caffeine 并返回
-            eventDetailLocalCache.put(eventId, serialize(data));
+            eventDetailLocalCache.put(
+                    eventId, EventDetailLocalValue.hot(serialize(data)));
             return data;
         }
 
         // 逻辑已过期，尝试异步重建
-        Boolean locked = redisTemplate.opsForValue()
-                .setIfAbsent(RedisKeyRegistry.eventHotLockKey(eventId), "1", LOCK_TTL);
+        String lockKey = RedisKeyRegistry.eventHotLockKey(eventId);
+        String lockToken = tryAcquireLock(lockKey);
 
-        if (Boolean.TRUE.equals(locked)) {
+        if (lockToken != null) {
             // 获锁成功，异步重建，当前请求先返回旧数据
             rebuildExecutor.submit(() -> {
                 try {
@@ -216,7 +255,7 @@ public class EventCacheManager {
                         warmUp(eventId, fresh);
                     }
                 } finally {
-                    redisTemplate.delete(RedisKeyRegistry.eventHotLockKey(eventId));
+                    releaseLock(lockKey, lockToken);
                 }
             });
         }
@@ -231,10 +270,11 @@ public class EventCacheManager {
      */
     public void warmUp(Long eventId, EventDetailDTO dto) {
         if (!redisEnabled) return;
-        LocalDateTime expireAt = LocalDateTime.now().plus(LOGICAL_EXPIRE_DURATION);
+        LocalDateTime expireAt = LocalDateTime.now(clock).plus(LOGICAL_EXPIRE_DURATION);
         LogicalExpireValue<EventDetailDTO> wrapper = new LogicalExpireValue<>(dto, expireAt);
         redisTemplate.opsForValue().set(RedisKeyRegistry.eventHotDetailKey(eventId), serialize(wrapper));
-        eventDetailLocalCache.put(eventId, serialize(dto));
+        eventDetailLocalCache.put(
+                eventId, EventDetailLocalValue.hot(serialize(dto)));
         log.info("Hot event cache warmed up for eventId={}", eventId);
     }
 
@@ -290,6 +330,36 @@ public class EventCacheManager {
         log.info("EventCacheManager rebuild executor shutdown initiated");
     }
 
+    /**
+     * Acquire a Redis mutex using a unique ownership token. A constant lock value is unsafe:
+     * if rebuilding exceeds the TTL, the old owner could otherwise delete a newer owner's lock.
+     */
+    private String tryAcquireLock(String key) {
+        String token = UUID.randomUUID().toString();
+        Boolean acquired = redisTemplate.opsForValue().setIfAbsent(key, token, LOCK_TTL);
+        if (Boolean.TRUE.equals(acquired)) {
+            metrics.recordCacheLock(TicketRushMetrics.CacheLockOutcome.ACQUIRED);
+            return token;
+        }
+        metrics.recordCacheLock(TicketRushMetrics.CacheLockOutcome.CONTENDED);
+        return null;
+    }
+
+    /** Release only when the key still contains our token (compare-and-delete in Lua). */
+    private void releaseLock(String key, String token) {
+        try {
+            Long released = redisTemplate.execute(releaseLockScript, List.of(key), token);
+            metrics.recordCacheLock(Long.valueOf(1L).equals(released)
+                    ? TicketRushMetrics.CacheLockOutcome.RELEASED
+                    : TicketRushMetrics.CacheLockOutcome.STALE_RELEASE_IGNORED);
+        } catch (RuntimeException exception) {
+            // The lock has a finite TTL. Do not mask a successful DB/cache rebuild merely because
+            // Redis became unavailable during cleanup.
+            metrics.recordCacheLock(TicketRushMetrics.CacheLockOutcome.RELEASE_FAILED);
+            log.warn("Cache lock release failed; waiting for TTL: key={}", key, exception);
+        }
+    }
+
     // ========== 序列化工具 ==========
 
     private <T> String serialize(T obj) {
@@ -304,7 +374,8 @@ public class EventCacheManager {
         try {
             return objectMapper.readValue(json, clazz);
         } catch (JsonProcessingException e) {
-            log.warn("反序列化失败，json={}", json, e);
+            log.warn("缓存值反序列化失败，type={}, error={}",
+                    clazz.getSimpleName(), e.getOriginalMessage());
             return null;
         }
     }

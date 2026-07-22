@@ -1,5 +1,6 @@
 services:
   app:
+    profiles: ["full"]
     build: .
     container_name: ticket-rush-app
     depends_on:
@@ -9,10 +10,12 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
-      chroma:
-        condition: service_started
     environment:
+      SPRING_PROFILES_ACTIVE: dev
       SERVER_PORT: 8081
+      BUSINESS_ZONE: ${BUSINESS_ZONE:-Asia/Shanghai}
+      TZ: ${BUSINESS_ZONE:-Asia/Shanghai}
+      JAVA_TOOL_OPTIONS: -Duser.timezone=${BUSINESS_ZONE:-Asia/Shanghai}
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
       MYSQL_DATABASE: ticket_rush
@@ -22,11 +25,21 @@ services:
       REDIS_PORT: 6379
       REDISSON_ENABLED: true
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      CHROMA_BASE_URL: http://chroma:8000
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      JWT_SECRET: ${JWT_SECRET:-VPz3ke7rVq0xqj+ouPOhWuzi4nHoRZak8Vc9dl3hCSw=}
+      JWT_SECRET: ${JWT_SECRET:-}
     ports:
       - "8081:8081"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8081;
+          printf "GET /actuator/health/readiness HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3;
+          timeout 3 grep -q "\"status\":\"UP\"" <&3'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   mysql:
     image: mysql:8.4
@@ -34,7 +47,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: 123456
       MYSQL_DATABASE: ticket_rush
-      TZ: Asia/Shanghai
+      TZ: ${BUSINESS_ZONE:-Asia/Shanghai}
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
@@ -43,7 +56,6 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
       - ./docker/mysql/conf.d:/etc/mysql/conf.d:ro
-      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
       interval: 10s
@@ -53,6 +65,7 @@ services:
   redis:
     image: redis:7.2
     container_name: ticket-rush-redis
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "16379:6379"
     volumes:
@@ -75,7 +88,8 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 12
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -91,19 +105,13 @@ services:
       timeout: 5s
       retries: 12
 
-  chroma:
-    image: chromadb/chroma:0.5.23
-    container_name: ticket-rush-chroma
-    ports:
-      - "8000:8000"
-    volumes:
-      - chroma-data:/chroma/chroma
-
   nginx:
+    profiles: ["full"]
     image: nginx:1.27-alpine
     container_name: ticket-rush-nginx
     depends_on:
-      - app
+      app:
+        condition: service_healthy
     ports:
       - "8080:80"
     volumes:
@@ -113,4 +121,3 @@ volumes:
   mysql-data:
   redis-data:
   kafka-data:
-  chroma-data:
