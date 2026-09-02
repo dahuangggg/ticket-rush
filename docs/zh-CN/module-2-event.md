@@ -1,6 +1,6 @@
 # 模块二：活动列表与详情缓存
 
-> 当前实现快照：2026-07-22。本文只描述当前缓存路径；旧版 Docker DDL、旧压测数字和早期热点计数仅保留在本地、被 Git 忽略的 `dev-docs/module-2-event.md`，不能作为当前证据。
+> 当前实现快照：2026-09-02。本文只描述当前缓存路径；旧版 Docker DDL、旧压测数字和早期热点计数仅保留在本地、被 Git 忽略的 `dev-docs/module-2-event.md`，不能作为当前证据。
 
 ## 当前接口
 
@@ -15,13 +15,13 @@
 
 ```mermaid
 flowchart LR
-    Request["活动详情请求"] --> Bloom["Bloom Filter 或 NoOp"]
+    Request["活动详情请求"] --> Local{"Caffeine 命中?"}
+    Local -->|"是"| Return["直接返回"]
+    Local -->|"否"| Bloom["Bloom Filter 或 NoOp"]
     Bloom --> Null["Redis 空值标记"]
     Null --> Hot["热点逻辑过期缓存"]
     Hot --> Normal["普通 Cache-Aside"]
     Normal --> DB[("MySQL")]
-    Hot --> Caffeine["Caffeine L1"]
-    Normal --> Caffeine
     Hot --> Redis[("Redis L2")]
     Normal --> Redis
 ```
@@ -31,6 +31,7 @@ flowchart LR
 - 活动详情默认最多 1,000 条，列表默认最多 100 条；
 - `expireAfterWrite=30s`；
 - 详情值带明确的 `normal/hot` 类型，普通值不会被热点探测路径误判；
+- 活动详情先查本地正缓存；命中后不再访问 Redis Bloom Filter、空值标记或详情 Key；
 - benchmark profile 可以把 maximum size 设为 0 来禁用本地缓存。
 
 ### 普通活动
@@ -104,10 +105,10 @@ flowchart LR
 表结构只来自 Flyway，当前活动表基线在 `V1__baseline_schema.sql`。Docker Compose 不挂载建表 SQL。
 
 ```bash
-./mvnw -Dtest=EventControllerTest,EventCacheManagerTest,RedisHotSpotDetectorTest test
+./mvnw -Dtest=EventControllerTest,EventCacheManagerTest,EventServiceLocalCacheTest,RedisHotSpotDetectorTest test
 ```
 
-本轮性能只重新执行了纯 MySQL 活动详情基线；历史 MySQL/Redis/Caffeine 三组 QPS 不是本轮结果。当前数字见[验证报告](verification-report.md)。
+2026-09-02 已使用统一 k6 负载重新执行 MySQL、Redis 和 Redis + Caffeine 三组活动详情 A/B 压测。当前数字和限制见[验证报告](verification-report.md#2026-09-02-缓存-ab-补充验证)。
 
 ## 历史方案（已废弃，不要照用）
 

@@ -216,9 +216,64 @@ responsesConserved = true
 
 最终 `all` 退出后再次检查：Redis DB 0 与 DB 15 的 key 数均为 0；Kafka 只剩内部 topic `__consumer_offsets`，没有 consumer group；压测锁已释放，端口 18081 空闲；MySQL、Redis、Kafka 容器仍为 `healthy`。这说明结果不是依赖残留业务数据得到的，且 harness 没有留下应用进程或锁。
 
+## 2026-09-02 缓存 A/B 补充验证
+
+新增 `bash bench/run.sh cache`，使用同一份 k6 脚本依次验证热点活动详情的纯 MySQL、
+MySQL + Redis、MySQL + Redis + Caffeine 三条读取路径。最终绿色 run ID 为
+`1788334710_abd5af944e0a2596`，命令使用 100 VUs、5 秒预热和 30 秒正式测试；每次只运行
+一个 Spring Boot 实例。由于宿主机默认端口被另一项目占用，本轮使用 MySQL `23306` 与
+Redis `26379`，容器内部拓扑未变。Kafka Listener 和 Topic 自动创建已关闭，不属于测量边界。
+
+| 场景 | 请求数 | QPS | P99 | HTTP 错误 |
+|---|---:|---:|---:|---:|
+| 纯 MySQL | 472,741 | 15,756.45 | 30.42 ms | 0 |
+| MySQL + Redis | 579,803 | 19,325.01 | 14.50 ms | 0 |
+| MySQL + Redis + Caffeine | 727,165 | 24,236.35 | 13.84 ms | 0 |
+
+本轮 Caffeine + Redis 相对纯 MySQL 的吞吐为约 `1.54x`，P99 降低约 `54.5%`。这是同机
+单轮观测，不是生产容量结论；当前实现也没有暴露 Caffeine 命中计数，因此不能报告精确缓存
+命中率。原始 bundle 位于本机 Git 忽略目录 `bench/results/`，三个结果目录后缀分别为
+`cache-mysql`、`cache-redis` 和 `cache-caffeine`。
+
+随后发现活动详情在 Caffeine 前先执行 Redis 空值检查，使 L1 命中仍承担 Redis RTT。增加
+`EventServiceLocalCacheTest` 复现后，将本地正缓存移到 Bloom Filter 和空值缓存之前，并用
+相同参数复测。修复后绿色 run ID 为 `1788335860_8f63bd1ab1226cc3`：
+
+| 场景 | 请求数 | QPS | 平均延迟 | P99 | HTTP 错误 |
+|---|---:|---:|---:|---:|---:|
+| 纯 MySQL | 471,601 | 15,718.02 | 5.54 ms | 33.15 ms | 0 |
+| MySQL + Redis | 685,151 | 22,828.83 | 4.09 ms | 14.04 ms | 0 |
+| MySQL + Redis + Caffeine | 808,252 | 26,940.00 | 3.11 ms | 18.96 ms | 0 |
+
+修复后 Caffeine 场景相对修复前单轮吞吐提高约 `11.2%`，平均延迟下降约 `16.8%`；相对同轮
+纯 MySQL 吞吐约为 `1.71x`。但 Redis 对照组在两轮之间也有明显波动，而且修复后单轮 P99
+高于修复前，因此不能把全部差值或尾延迟变化归因于本次修改。
+
+为减少单轮和执行顺序偏差，又执行 5 轮交错复测。run ID 为
+`1788336729_0ac5706105ae76f0`；每轮仍为 100 VUs、5 秒预热和 30 秒正式测试，顺序按
+`MySQL → Redis → Caffeine`、`Redis → Caffeine → MySQL`、
+`Caffeine → MySQL → Redis` 循环。每个场景启动前清理本轮独占 Redis 库中的事件缓存，
+再独立预热；代表值采用 5 轮中位数，不选择最好的一轮。
+
+| 场景 | QPS 中位数 | QPS 范围 | QPS CV | P99 中位数 | P99 范围 | P99 CV | 总错误 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 纯 MySQL | 14,671.33 | 14,356.07～15,986.53 | 5.18% | 35.71 ms | 33.10～38.19 ms | 5.61% | 0 |
+| MySQL + Redis | 22,009.46 | 21,127.03～23,530.50 | 4.05% | 14.16 ms | 13.06～16.17 ms | 8.24% | 0 |
+| MySQL + Redis + Caffeine | 38,785.62 | 38,003.34～42,214.95 | 4.68% | 11.03 ms | 9.99～11.36 ms | 5.52% | 0 |
+
+以中位数比较，Caffeine 场景相对纯 MySQL 吞吐约为 `2.64x`，P99 下降约 `69.1%`。
+各组 QPS CV 为 `4.05%～5.18%`，证明本机仍存在可见轮次波动；但 Caffeine 的 5 轮 P99
+集中在 `9.99～11.36 ms`，此前 `18.96 ms` 属于本组条件下未复现的单轮高值，不能作为
+代表值。Prometheus 快照也没有提供足够的时序证据把该尖峰唯一归因于 GC、JIT 或调度中的
+某一项，因此这里只把它判断为本机同机压测噪声与运行状态共同造成的离群观测。
+
+本轮 15 个正式测量共处理 11,549,891 个请求，HTTP 错误为 0。结束后确认临时 MySQL
+数据库为 0 个、Redis DB 15 为空、压测锁已释放且端口 18081 无监听。原始汇总位于本机
+Git 忽略目录的 `...-1788336729_0ac5706105ae76f0-cache-summary/cache-aggregate.json`。
+
 ## 压测过程中发现并修复的问题
 
-最终绿色 run 之前，压测实际暴露了五个 harness 缺陷：
+最终绿色 run 之前，压测实际暴露了六个 harness 缺陷：
 
 | 缺陷 | 影响 | 修复方向 |
 |---|---|---|
@@ -227,6 +282,7 @@ responsesConserved = true
 | 18 位测试 ID 拼接成手机号超过 `VARCHAR(20)` | full async fixture 插入失败 | 使用长度受控的合成手机号 |
 | JavaScript `Number` 舍入 18 位 ID | HTTP、Redis、MySQL 使用了不同身份 | 将大整数 ID 作为字符串传递，避免 IEEE-754 精度损失 |
 | k6 默认中位数字段名是 `med`，脚本却读取 `p(50)` | P50 被错误报告为 `null` | 显式设置 `summaryTrendStats`，并统一输出 avg、P50、P90、P95、P99 和 max |
+| 多轮缓存测试固定执行顺序且沿用上一场景的事件缓存 | 顺序和缓存状态可能污染后续结果 | 三种顺序循环轮换，每场景清理事件缓存后独立预热，并汇总中位数、范围和 CV |
 
 另外加固了 Kafka consumer group 查询重试，以及仅清理由本轮独占的 Redis outbox SKU registry 数据。调试失败目录不是性能结论；上文只采用最终退出 0 的同一 run ID。
 

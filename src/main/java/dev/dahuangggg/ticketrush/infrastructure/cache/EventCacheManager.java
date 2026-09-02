@@ -98,6 +98,36 @@ public class EventCacheManager {
         return Boolean.TRUE.equals(redisTemplate.hasKey(RedisKeyRegistry.eventNullKey(eventId)));
     }
 
+    /**
+     * 查询任意类型的本地活动详情正缓存。
+     *
+     * <p>这是活动详情读取路径的 L1 快速入口。命中时调用方可以直接返回，不需要先访问
+     * Redis Bloom Filter、空值标记或详情 Key。缓存失效仍由写后删除和 30 秒本地 TTL 控制。</p>
+     */
+    public LocalEventDetail getLocalEventDetail(Long eventId) {
+        EventDetailLocalValue local = eventDetailLocalCache.getIfPresent(eventId);
+        if (local == null) {
+            return null;
+        }
+        EventDetailDTO cached = deserialize(local.json(), EventDetailDTO.class);
+        if (cached != null) {
+            return new LocalEventDetail(cached, local.hot());
+        }
+        eventDetailLocalCache.invalidate(eventId);
+        return null;
+    }
+
+    private EventDetailDTO getLocalEventDetail(Long eventId, Boolean expectedHot) {
+        LocalEventDetail local = getLocalEventDetail(eventId);
+        if (local == null || (expectedHot != null && local.hot() != expectedHot)) {
+            return null;
+        }
+        return local.detail();
+    }
+
+    public record LocalEventDetail(EventDetailDTO detail, boolean hot) {
+    }
+
     // ========== 普通活动详情（Cache-Aside + 互斥锁防击穿）==========
 
     /**
@@ -113,13 +143,9 @@ public class EventCacheManager {
      */
     public EventDetailDTO getNormalEventDetail(Long eventId, Supplier<EventDetailDTO> dbLoader) {
         // 1. 查 Caffeine 本地缓存
-        EventDetailLocalValue local = eventDetailLocalCache.getIfPresent(eventId);
-        if (local != null && !local.hot()) {
-            EventDetailDTO cached = deserialize(local.json(), EventDetailDTO.class);
-            if (cached != null) {
-                return cached;
-            }
-            eventDetailLocalCache.invalidate(eventId);
+        EventDetailDTO local = getLocalEventDetail(eventId, false);
+        if (local != null) {
+            return local;
         }
 
         // 2. 查 Redis（bench-db profile 下跳过）
@@ -209,13 +235,9 @@ public class EventCacheManager {
      */
     public EventDetailDTO getHotEventDetail(Long eventId, Supplier<EventDetailDTO> dbLoader) {
         // 1. 查 Caffeine
-        EventDetailLocalValue local = eventDetailLocalCache.getIfPresent(eventId);
-        if (local != null && local.hot()) {
-            EventDetailDTO cached = deserialize(local.json(), EventDetailDTO.class);
-            if (cached != null) {
-                return cached;
-            }
-            eventDetailLocalCache.invalidate(eventId);
+        EventDetailDTO local = getLocalEventDetail(eventId, true);
+        if (local != null) {
+            return local;
         }
 
         // 2. 查 Redis（bench-db profile 下跳过，直接穿透到 DB）
