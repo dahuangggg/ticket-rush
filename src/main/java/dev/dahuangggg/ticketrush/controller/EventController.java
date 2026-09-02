@@ -39,7 +39,7 @@ public class EventController {
     /**
      * 查询活动详情。
      *
-     * 经过布隆过滤器、空值缓存、热点/普通缓存策略的完整处理。
+     * 经过 Caffeine、布隆过滤器、空值缓存、热点/普通缓存策略的完整处理。
      * 活动不存在时返回 404 EVENT_NOT_FOUND。
      */
     @GetMapping("/{eventId}")

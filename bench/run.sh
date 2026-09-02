@@ -9,6 +9,8 @@ MYSQL_CONTAINER=${MYSQL_CONTAINER:-ticket-rush-mysql}
 REDIS_CONTAINER=${REDIS_CONTAINER:-ticket-rush-redis}
 KAFKA_CONTAINER=${KAFKA_CONTAINER:-ticket-rush-kafka}
 BENCH_MYSQL_ROOT_PASSWORD=${BENCH_MYSQL_ROOT_PASSWORD:-123456}
+BENCH_MYSQL_PORT=${BENCH_MYSQL_PORT:-13306}
+BENCH_REDIS_PORT=${BENCH_REDIS_PORT:-16379}
 
 BENCH_PORT=${BENCH_PORT:-18081}
 BASE_URL="http://127.0.0.1:${BENCH_PORT}"
@@ -28,6 +30,10 @@ LUA_CLIENTS=${BENCH_LUA_CLIENTS:-$CONNECTIONS}
 ASYNC_USERS=${BENCH_ASYNC_USERS:-1000}
 ASYNC_VUS=${BENCH_ASYNC_VUS:-100}
 ASYNC_TIMEOUT_SECONDS=${BENCH_ASYNC_TIMEOUT_SECONDS:-90}
+CACHE_VUS=${BENCH_CACHE_VUS:-100}
+CACHE_DURATION=${BENCH_CACHE_DURATION:-30s}
+CACHE_WARMUP_DURATION=${BENCH_CACHE_WARMUP_DURATION:-5s}
+CACHE_ROUNDS=${BENCH_CACHE_ROUNDS:-1}
 BENCH_KEEP_DATABASE=${BENCH_KEEP_DATABASE:-false}
 
 SCENARIO=${1:-all}
@@ -103,6 +109,12 @@ validate_configuration() {
         echo "BENCH_PORT must be at most 65535" >&2
         exit 2
     fi
+    require_positive_integer BENCH_MYSQL_PORT "$BENCH_MYSQL_PORT"
+    require_positive_integer BENCH_REDIS_PORT "$BENCH_REDIS_PORT"
+    if [[ "$BENCH_MYSQL_PORT" -gt 65535 || "$BENCH_REDIS_PORT" -gt 65535 ]]; then
+        echo "BENCH_MYSQL_PORT and BENCH_REDIS_PORT must be at most 65535" >&2
+        exit 2
+    fi
     require_positive_integer BENCH_THREADS "$THREADS"
     require_positive_integer BENCH_CONNECTIONS "$CONNECTIONS"
     require_positive_integer BENCH_LUA_REQUESTS "$LUA_REQUESTS"
@@ -114,6 +126,12 @@ validate_configuration() {
     fi
     require_positive_integer BENCH_ASYNC_VUS "$ASYNC_VUS"
     require_positive_integer BENCH_ASYNC_TIMEOUT_SECONDS "$ASYNC_TIMEOUT_SECONDS"
+    require_positive_integer BENCH_CACHE_VUS "$CACHE_VUS"
+    require_positive_integer BENCH_CACHE_ROUNDS "$CACHE_ROUNDS"
+    if [[ -z "$CACHE_DURATION" || -z "$CACHE_WARMUP_DURATION" ]]; then
+        echo "BENCH_CACHE_DURATION and BENCH_CACHE_WARMUP_DURATION must not be empty" >&2
+        exit 2
+    fi
     if [[ ! "$BENCH_DATABASE" =~ ^ticket_rush_bench_[0-9]+_[a-f0-9]{16}$ ]] \
             || [[ ${#BENCH_DATABASE} -gt 64 ]]; then
         echo "generated BENCH_DATABASE is outside the safe per-run namespace" >&2
@@ -170,7 +188,11 @@ wait_healthy() {
 
 ensure_dependencies() {
     require_command docker
-    (cd "$PROJECT_DIR" && BUSINESS_ZONE=Asia/Shanghai docker compose up -d mysql redis kafka)
+    (cd "$PROJECT_DIR" && \
+        BUSINESS_ZONE=Asia/Shanghai \
+        MYSQL_HOST_PORT="$BENCH_MYSQL_PORT" \
+        REDIS_HOST_PORT="$BENCH_REDIS_PORT" \
+        docker compose up -d mysql redis kafka)
     wait_healthy "$MYSQL_CONTAINER"
     wait_healthy "$REDIS_CONTAINER"
     wait_healthy "$KAFKA_CONTAINER"
@@ -273,15 +295,26 @@ new_result_dir() {
 
 record_metadata() {
     local scenario=$1 prometheus_artifact=$2 database_used=$3
+    local kafka_mode=${4:-owned}
     local recorded_database=not-used
     local recorded_group=not-used
     local database_disposition=not-applicable
     local recorded_redis_database=default
+    local kafka_auto_offset_reset=not-used
+    local kafka_broker_requirement=not-used
+    local kafka_rush_topic=not-used
     if [[ "$database_used" == "true" ]]; then
         recorded_database=$BENCH_DATABASE
-        recorded_group=$KAFKA_GROUP_ID
+        recorded_group=$([[ "$kafka_mode" == "owned" ]] && echo "$KAFKA_GROUP_ID" || echo not-used)
         database_disposition=$([[ "$BENCH_KEEP_DATABASE" == "true" ]] && echo retain || echo drop-on-exit)
         recorded_redis_database=$BENCH_REDIS_DATABASE
+        if [[ "$kafka_mode" == "owned" ]]; then
+            kafka_auto_offset_reset=latest
+            kafka_broker_requirement=dedicated-empty
+            kafka_rush_topic=$KAFKA_RUSH_TOPIC
+        else
+            kafka_broker_requirement=read-only-not-measured
+        fi
     fi
     {
         echo "scenario=$scenario"
@@ -296,10 +329,12 @@ record_metadata() {
         echo "mysql_database=$recorded_database"
         echo "mysql_database_disposition=$database_disposition"
         echo "redis_database=$recorded_redis_database"
+        echo "mysql_host_port=$BENCH_MYSQL_PORT"
+        echo "redis_host_port=$BENCH_REDIS_PORT"
         echo "kafka_consumer_group=$recorded_group"
-        echo "kafka_auto_offset_reset=$([[ "$database_used" == "true" ]] && echo latest || echo not-used)"
-        echo "kafka_broker_requirement=$([[ "$database_used" == "true" ]] && echo dedicated-empty || echo not-used)"
-        echo "kafka_rush_topic=$([[ "$database_used" == "true" ]] && echo "$KAFKA_RUSH_TOPIC" || echo not-used)"
+        echo "kafka_auto_offset_reset=$kafka_auto_offset_reset"
+        echo "kafka_broker_requirement=$kafka_broker_requirement"
+        echo "kafka_rush_topic=$kafka_rush_topic"
         echo "prometheus_artifact=$prometheus_artifact"
         echo "credential_artifacts=not-retained"
         echo "threads=$THREADS"
@@ -309,6 +344,10 @@ record_metadata() {
         echo "lua_clients=$LUA_CLIENTS"
         echo "async_users=$ASYNC_USERS"
         echo "async_vus=$ASYNC_VUS"
+        echo "cache_vus=$CACHE_VUS"
+        echo "cache_duration=$CACHE_DURATION"
+        echo "cache_warmup_duration=$CACHE_WARMUP_DURATION"
+        echo "cache_rounds=$CACHE_ROUNDS"
         echo "mysql_image=$(docker inspect --format '{{.Config.Image}}@{{.Image}}' "$MYSQL_CONTAINER")"
         echo "redis_image=$(docker inspect --format '{{.Config.Image}}@{{.Image}}' "$REDIS_CONTAINER")"
         echo "kafka_image=$(docker inspect --format '{{.Config.Image}}@{{.Image}}' "$KAFKA_CONTAINER")"
@@ -353,7 +392,13 @@ wait_application() {
 
 start_application() {
     local profiles=$1
-    ensure_kafka_broker_disposable
+    local kafka_mode=${2:-owned}
+    if [[ "$kafka_mode" == "owned" ]]; then
+        ensure_kafka_broker_disposable
+    elif [[ "$kafka_mode" != "read-only" ]]; then
+        echo "unknown benchmark Kafka mode: $kafka_mode" >&2
+        exit 2
+    fi
     assert_port_available
     if [[ -z "${BENCH_JWT_SECRET:-}" ]]; then
         BENCH_JWT_SECRET=$(openssl rand -base64 48)
@@ -370,20 +415,20 @@ start_application() {
         BUSINESS_ZONE=Asia/Shanghai \
         JAVA_TOOL_OPTIONS=-Duser.timezone=Asia/Shanghai \
         MYSQL_HOST=127.0.0.1 \
-        MYSQL_PORT=13306 \
+        MYSQL_PORT="$BENCH_MYSQL_PORT" \
         MYSQL_DATABASE="$BENCH_DATABASE" \
         MYSQL_USERNAME=root \
         MYSQL_PASSWORD="$BENCH_MYSQL_ROOT_PASSWORD" \
         MYSQL_POOL_MAX_SIZE=20 \
         MYSQL_POOL_MIN_IDLE=5 \
-        SPRING_DATASOURCE_URL="jdbc:mysql://127.0.0.1:13306/${BENCH_DATABASE}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8" \
+        SPRING_DATASOURCE_URL="jdbc:mysql://127.0.0.1:${BENCH_MYSQL_PORT}/${BENCH_DATABASE}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8" \
         SPRING_DATASOURCE_USERNAME=root \
         SPRING_DATASOURCE_PASSWORD="$BENCH_MYSQL_ROOT_PASSWORD" \
         REDIS_HOST=127.0.0.1 \
-        REDIS_PORT=16379 \
+        REDIS_PORT="$BENCH_REDIS_PORT" \
         REDIS_PASSWORD='' \
         SPRING_DATA_REDIS_HOST=127.0.0.1 \
-        SPRING_DATA_REDIS_PORT=16379 \
+        SPRING_DATA_REDIS_PORT="$BENCH_REDIS_PORT" \
         SPRING_DATA_REDIS_PASSWORD='' \
         SPRING_DATA_REDIS_DATABASE="$BENCH_REDIS_DATABASE" \
         REDISSON_ENABLED=false \
@@ -392,6 +437,8 @@ start_application() {
         SPRING_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
         SPRING_KAFKA_CONSUMER_GROUP_ID="$KAFKA_GROUP_ID" \
         SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET=latest \
+        SPRING_KAFKA_LISTENER_AUTO_STARTUP="$([[ "$kafka_mode" == "owned" ]] && echo true || echo false)" \
+        SPRING_KAFKA_ADMIN_AUTO_CREATE="$([[ "$kafka_mode" == "owned" ]] && echo true || echo false)" \
         KAFKA_LISTENER_CONCURRENCY=3 \
         KAFKA_TOPIC_REPLICATION_FACTOR=1 \
         KAFKA_RUSH_TOPIC_PARTITIONS=12 \
@@ -401,7 +448,9 @@ start_application() {
         ./mvnw -q spring-boot:run
     ) > "$CURRENT_RESULT_DIR/application.log" 2>&1 &
     APP_PID=$!
-    KAFKA_GROUP_USED=true
+    if [[ "$kafka_mode" == "owned" ]]; then
+        KAFKA_GROUP_USED=true
+    fi
     wait_application
 }
 
@@ -481,6 +530,107 @@ run_mysql_baseline() {
     capture_prometheus
     stop_application
     echo "mysql baseline results: $CURRENT_RESULT_DIR"
+}
+
+clear_event_cache() {
+    docker exec \
+        -e REDIS_DB="$BENCH_REDIS_DATABASE" \
+        "$REDIS_CONTAINER" sh -eu -c '
+            redis-cli -n "$REDIS_DB" --scan --pattern "event:*" |
+            while IFS= read -r key; do
+                redis-cli -n "$REDIS_DB" UNLINK "$key" >/dev/null
+            done
+        '
+}
+
+run_cache_variant() {
+    local name=$1 profiles=$2 prepare_fixture=$3 round=$4 position=$5 variant=$6
+    new_result_dir "$name"
+    record_metadata "$name" planned true read-only
+    {
+        echo "cache_round=$round"
+        echo "cache_position=$position"
+        echo "cache_variant=$variant"
+    } >> "$CURRENT_RESULT_DIR/metadata.env"
+    if [[ "$prepare_fixture" == "true" ]]; then
+        start_application "$profiles" read-only
+        prepare_business_fixture
+        printf 'UPDATE tb_event SET is_hot=1 WHERE id=%s;\n' "$EVENT_ID" | mysql_exec
+    else
+        clear_event_cache
+        start_application "$profiles" read-only
+    fi
+    verify_event_smoke_response
+
+    k6 run \
+        -e BASE_URL="$BASE_URL" \
+        -e EVENT_ID="$EVENT_ID" \
+        -e VUS="$CACHE_VUS" \
+        -e DURATION="$CACHE_WARMUP_DURATION" \
+        "$BENCH_DIR/k6/event-detail.js" \
+        > "$CURRENT_RESULT_DIR/k6-warmup.txt"
+    k6 run \
+        -e SUMMARY_FILE="$CURRENT_RESULT_DIR/k6-summary.json" \
+        -e BASE_URL="$BASE_URL" \
+        -e EVENT_ID="$EVENT_ID" \
+        -e VUS="$CACHE_VUS" \
+        -e DURATION="$CACHE_DURATION" \
+        "$BENCH_DIR/k6/event-detail.js" \
+        | tee "$CURRENT_RESULT_DIR/k6.txt"
+    capture_prometheus
+    stop_application
+    CACHE_SUMMARY_INPUTS+=("$variant=$CURRENT_RESULT_DIR/k6-summary.json")
+    echo "$name results: $CURRENT_RESULT_DIR"
+}
+
+run_cache_comparison() {
+    local fixture_offset=${1:-0}
+    require_command k6
+    require_command curl
+    require_command python3
+    ensure_dependencies
+    ensure_benchmark_database
+    set_fixture_ids "$fixture_offset"
+    ASYNC_REDIS_PREFIX="event"
+    claim_async_redis_database
+    CACHE_SUMMARY_INPUTS=()
+
+    local round rotation position variant profiles name prepare_fixture
+    local fixture_prepared=false
+    local -a order
+    for ((round = 1; round <= CACHE_ROUNDS; round++)); do
+        rotation=$(((round - 1) % 3))
+        case "$rotation" in
+            0) order=(mysql redis caffeine) ;;
+            1) order=(redis caffeine mysql) ;;
+            2) order=(caffeine mysql redis) ;;
+        esac
+        for position in 1 2 3; do
+            variant=${order[$((position - 1))]}
+            case "$variant" in
+                mysql) profiles="dev,bench-db" ;;
+                redis) profiles="dev,bench-redis" ;;
+                caffeine) profiles="dev,bench-full" ;;
+            esac
+            prepare_fixture=false
+            if [[ "$fixture_prepared" == "false" ]]; then
+                prepare_fixture=true
+                fixture_prepared=true
+            fi
+            if [[ "$CACHE_ROUNDS" -eq 1 ]]; then
+                name="cache-$variant"
+            else
+                name="cache-r${round}-$variant"
+            fi
+            run_cache_variant "$name" "$profiles" "$prepare_fixture" \
+                "$round" "$position" "$variant"
+        done
+    done
+
+    new_result_dir cache-summary
+    python3 "$BENCH_DIR/summarize_cache.py" "${CACHE_SUMMARY_INPUTS[@]}" \
+        | tee "$CURRENT_RESULT_DIR/cache-aggregate.json"
+    echo "cache aggregate results: $CURRENT_RESULT_DIR"
 }
 
 guard_lua_keys() {
@@ -901,15 +1051,20 @@ acquire_process_lock
 
 case "$SCENARIO" in
     mysql) run_mysql_baseline 0 ;;
+    cache) run_cache_comparison 0 ;;
     lua) run_redis_lua 0 ;;
     async) run_full_async 0 ;;
     all)
         run_mysql_baseline 0
         run_redis_lua 10
         run_full_async 20
+        # The async and cache scenarios both require exclusive ownership of the configured Redis
+        # database. Release only this run's exact namespace and sentinel before claiming it again.
+        cleanup_redis
+        run_cache_comparison 30
         ;;
     *)
-        echo "usage: bash bench/run.sh [mysql|lua|async|all]" >&2
+        echo "usage: bash bench/run.sh [mysql|cache|lua|async|all]" >&2
         exit 2
         ;;
 esac

@@ -84,21 +84,29 @@ public class EventServiceImpl implements EventService {
      * 查询活动详情，完整缓存策略。
      *
      * 执行顺序：
-     * 1. 布隆过滤器：一定不存在则直接 404，不查缓存和 DB。
-     * 2. 空值缓存：Redis 有空值标记则直接 404（DB 之前已确认不存在）。
-     * 3. 根据 is_hot 选择缓存策略：
+     * 1. Caffeine 本地正缓存：命中后直接返回，不访问 Redis。
+     * 2. 布隆过滤器：一定不存在则直接 404，不查 Redis 详情和 DB。
+     * 3. 空值缓存：Redis 有空值标记则直接 404（DB 之前已确认不存在）。
+     * 4. 根据 is_hot 选择缓存策略：
      *    - 热点活动：逻辑过期，未命中时触发预热（冷启动兜底）。
      *    - 普通活动：Cache-Aside + 互斥锁。
-     * 4. 异步记录访问量，超阈值时触发动态预热告警。
+     * 5. 异步记录访问量，超阈值时触发动态预热告警。
      */
     @Override
     public EventDetailDTO getEventDetail(Long eventId) {
-        // 1. 布隆过滤器拦截（一定不存在，无需查 Redis 和 DB）
+        // 1. L1 正缓存命中后直接返回，避免穿透防护反过来为每次热点读取增加 Redis RTT。
+        EventCacheManager.LocalEventDetail local = cacheManager.getLocalEventDetail(eventId);
+        if (local != null) {
+            hotSpotDetector.trackAccess(eventId, local.hot(), local.detail());
+            return local.detail();
+        }
+
+        // 2. 布隆过滤器拦截（一定不存在，无需查 Redis 详情和 DB）
         if (!bloomFilterService.mightExist(eventId)) {
             throw new EventNotFoundException(eventId);
         }
 
-        // 2. 空值缓存（DB 已确认不存在的 ID）
+        // 3. 空值缓存（DB 已确认不存在的 ID）
         if (cacheManager.isNull(eventId)) {
             throw new EventNotFoundException(eventId);
         }
@@ -106,7 +114,7 @@ public class EventServiceImpl implements EventService {
         // 使用原子引用捕获 DB 查询结果，用于后续异步热点检测
         AtomicReference<Event> loadedEvent = new AtomicReference<>();
 
-        // 3. 优先尝试热点活动缓存（不提前查 DB）
+        // 4. 优先尝试热点活动缓存（不提前查 DB）
         //    热点活动命中率极高，无需每次查 DB 确认 isHot
         EventDetailDTO result = cacheManager.getHotEventDetail(eventId, () -> {
             // dbLoader 仅在热点缓存逻辑过期、异步重建时调用
@@ -123,7 +131,7 @@ public class EventServiceImpl implements EventService {
             return result;
         }
 
-        // 4. 热点缓存未命中（普通活动，或热点活动冷启动）
+        // 5. 热点缓存未命中（普通活动，或热点活动冷启动）
         //    走 Cache-Aside + 互斥锁路径，dbLoader 在缓存未命中时才调 DB
         result = cacheManager.getNormalEventDetail(eventId, () -> {
             Event event = eventMapper.selectById(eventId);

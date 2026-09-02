@@ -201,11 +201,12 @@ npm run build
 
 分别记录依赖安装、漏洞审计和生产构建结果。`npm run build` 成功不能代替浏览器端交互 E2E。
 
-## 压测的三个边界
+## 压测的四个边界
 
 | 场景 | 命令 | 测量内容 | 不包含 |
 |---|---|---|---|
 | MySQL baseline | `bash bench/run.sh mysql` | 关闭 Redis/Caffeine 的活动详情 HTTP | Reservation、Kafka、订单 |
+| Cache comparison | `bash bench/run.sh cache` | 相同活动详情负载下对比纯 MySQL、Redis、Redis + Caffeine | Kafka、Reservation、订单 |
 | Redis Lua | `bash bench/run.sh lua` | Redis 原子库存扣减与唯一用户记录 | HTTP、JWT、MySQL、Kafka |
 | Full async | `bash bench/run.sh async` | k6 测 HTTP 202 Reservation 接受阶段；随后等待 Relay、Kafka 与 MySQL Order Intake 收敛并做守恒门禁 | 订单提交吞吐、真实支付和生产级多副本拓扑 |
 
@@ -219,6 +220,7 @@ bash bench/run.sh all
 
 ```bash
 BENCH_DURATION=30s BENCH_CONNECTIONS=200 bash bench/run.sh mysql
+BENCH_CACHE_ROUNDS=5 BENCH_CACHE_VUS=100 BENCH_CACHE_WARMUP_DURATION=5s BENCH_CACHE_DURATION=30s bash bench/run.sh cache
 BENCH_LUA_REQUESTS=100000 BENCH_LUA_CLIENTS=100 bash bench/run.sh lua
 BENCH_ASYNC_USERS=5000 BENCH_ASYNC_VUS=200 bash bench/run.sh async
 ```

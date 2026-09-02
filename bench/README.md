@@ -1,6 +1,6 @@
 # Reproducible performance experiments
 
-This harness separates three different questions. Their throughput numbers are not directly
+This harness separates four different questions. Their throughput numbers are not directly
 comparable because each scenario measures a different boundary.
 
 | Scenario | Command | Measured boundary |
@@ -8,11 +8,13 @@ comparable because each scenario measures a different boundary.
 | MySQL baseline | `bash bench/run.sh mysql` | HTTP event-detail path with Redis and Caffeine disabled |
 | Redis Lua | `bash bench/run.sh lua` | Atomic stock deduction and unique-user recording in Redis only |
 | Full async | `bash bench/run.sh async` | HTTP 202 Reservation-acceptance burst, then post-burst convergence through relay, Kafka, MySQL validation, and order creation |
+| Cache comparison | `bash bench/run.sh cache` | The same k6 event-detail workload against MySQL-only, Redis, and Redis + Caffeine profiles |
 
 Run every scenario with `bash bench/run.sh all`.
 
-The latest recorded green run is `1784692033_4123146903ca9a80` from 2026-07-22. It passed all
-three scenario-specific correctness gates. See the
+The original MySQL, Lua, and full-async gates last passed together in run
+`1784692033_4123146903ca9a80` on 2026-07-22. The five-round cache comparison last passed in run
+`1788336729_0ac5706105ae76f0` on 2026-09-02. See the
 [verification report](../docs/zh-CN/verification-report.md#压测总览) for the exact workload,
 latencies, throughput, cleanup state, and limitations; it is a single-machine observation rather
 than a committed capacity baseline. Raw bundles live under the locally ignored `bench/results/`
@@ -54,7 +56,24 @@ Common workload controls can be overridden without editing the script:
 BENCH_DURATION=30s BENCH_CONNECTIONS=200 bash bench/run.sh mysql
 BENCH_LUA_REQUESTS=100000 BENCH_LUA_CLIENTS=100 bash bench/run.sh lua
 BENCH_ASYNC_USERS=5000 BENCH_ASYNC_VUS=200 bash bench/run.sh async
+BENCH_CACHE_ROUNDS=5 BENCH_CACHE_VUS=100 BENCH_CACHE_WARMUP_DURATION=5s BENCH_CACHE_DURATION=30s bash bench/run.sh cache
 ```
+
+If the default MySQL or Redis host port is occupied, select unused ports without changing the
+container-internal topology:
+
+```bash
+BENCH_MYSQL_PORT=23306 BENCH_REDIS_PORT=26379 bash bench/run.sh cache
+```
+
+The cache comparison runs one application instance at a time against the same disposable fixture.
+Each variant starts from cleared event-cache keys and gets a separate k6 warm-up phase before the
+measured phase. `BENCH_CACHE_ROUNDS` defaults to one. For repeated tests, the harness rotates the
+MySQL, Redis, and Caffeine execution order between rounds and writes median, range, standard
+deviation, and coefficient of variation to the `cache-summary/cache-aggregate.json` result. Use the
+five-round median as the representative local result instead of selecting the best round. This
+read-only benchmark disables Kafka listeners and topic creation; Kafka is not part of its measured
+boundary. Do not reuse the older untracked cache figures as current evidence.
 
 The harness generates a non-overridable run ID from the start time plus 64 bits of randomness. The
 MySQL database, event ID, SKU ID, Redis key namespace, and Kafka group are all derived from that

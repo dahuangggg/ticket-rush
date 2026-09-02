@@ -15,7 +15,7 @@ public interface EventService {
     List<EventDTO> listEvents(EventListRequest request);
 
     /**
-     * 查询活动详情，包含完整的缓存策略（布隆过滤器、热点/普通路由、穿透防护）。
+     * 查询活动详情，包含完整的缓存策略（Caffeine、布隆过滤器、热点/普通路由、穿透防护）。
      */
     EventDetailDTO getEventDetail(Long eventId);
 

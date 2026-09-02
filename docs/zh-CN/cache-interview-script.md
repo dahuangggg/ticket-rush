@@ -1,6 +1,6 @@
 # ticket-rush 缓存设计面试话术
 
-> 当前实现快照：2026-07-22。本文只使用当前源码和[本轮验证报告](verification-report.md)作为证据。本地、被 Git 忽略的 `dev-docs` 中三组旧机器缓存 QPS 是历史实验，本轮没有按相同边界复跑，不能当成当前性能结论。
+> 当前缓存 A/B 证据更新于 2026-09-02。旧 `dev-docs` 中的缓存 QPS 是历史实验，当前性能结论以[验证报告](verification-report.md#2026-09-02-缓存-ab-补充验证)为准。
 
 ## 30 秒版本
 
@@ -15,6 +15,7 @@
 | MySQL | 持久活动元数据 | 不应承受热点详情的全部读峰值 |
 
 当前 Caffeine 详情默认最多 1,000 条、列表最多 100 条，TTL 30 秒。详情值带 `normal/hot` 类型，避免普通缓存命中后被热点路径误判。
+活动详情先查 Caffeine 正缓存，只有本地未命中时才访问 Redis Bloom Filter、空值标记和详情缓存，避免穿透防护给 L1 命中增加网络往返。
 
 ## 普通活动：Cache-Aside + 互斥锁
 
@@ -102,13 +103,13 @@ Bloom Filter 只会给出“可能存在”，不能代替 MySQL；NoOp 模式�
 
 ## 性能证据应该怎么说
 
-本轮只可陈述：
+当前可陈述：
 
-- `bench/run.sh mysql` 测的是关闭 Redis/Caffeine 的活动详情 HTTP 基线；
+- `bench/run.sh cache` 使用同一 k6 负载对比纯 MySQL、Redis 和 Redis + Caffeine；100 VUs、5 秒预热、30 秒测量并交错顺序执行 5 轮后，中位数显示 Redis + Caffeine 相对纯 MySQL 吞吐约为 2.64 倍，P99 从 35.71 ms 降至 11.03 ms；
 - `bench/run.sh lua` 测的是 Redis Lua 原语；
 - `bench/run.sh async` 的吞吐和延迟测 HTTP 202 Reservation 接受阶段，随后才等待 Relay、Kafka 与 Order Intake 收敛并校验订单与库存。
 
-三者边界不同，吞吐不能横向相除得出“缓存提升倍数”。准确结果、环境和目录见[验证报告](verification-report.md)。如果要证明 Caffeine 相对 Redis 的收益，需要在同一数据、同一接口、同一并发和多轮重复下重新设计 A/B 实验。
+缓存 A/B 内部使用相同接口和负载，可以比较；缓存、Lua 和 full async 三个不同边界之间不能横向比较。准确结果、环境和目录见[验证报告](verification-report.md)。当前缓存数据是五轮本机观测，QPS CV 约为 4.05%～5.18%，仍不是生产容量承诺。
 
 ## 不能这样说
 
