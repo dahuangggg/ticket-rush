@@ -62,6 +62,8 @@ cd frontend && npm ci && npm run dev
 docker compose up -d mysql redis kafka && ./mvnw -Pintegration verify   # 真实服务集成测试
 ```
 
+> 注意：集成测试会清空测试用的 Redis 键和数据库数据，请指向专用的空数据库，不要用共享开发库。创建与清理命令见 [运行指南](docs/getting-started/running.md#test)。
+
 Flyway 会自动执行 V1–V4 迁移，dev profile 额外导入开发种子数据。复用旧数据库前请先阅读 [运行指南](docs/getting-started/running.md)。
 
 ### 目录结构
@@ -145,6 +147,8 @@ Tests:
 ./mvnw test                                                  # fast lane, no external services
 docker compose up -d mysql redis kafka && ./mvnw -Pintegration verify   # real-service integration lane
 ```
+
+> Warning: the integration lane deletes test Redis keys and database data. Point it at a dedicated empty database, not a shared development database; see the [run guide](docs/getting-started/running.md#test) for create and cleanup commands.
 
 Flyway applies migrations V1–V4 automatically; the dev profile also loads a development seed. Read the [run guide](docs/getting-started/running.md) before reusing an old database.
 
