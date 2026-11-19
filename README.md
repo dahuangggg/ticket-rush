@@ -1,182 +1,174 @@
 # ticket-rush
 
-[中文说明](README.zh-CN.md)
+[中文](#中文) | [English](#english)
 
-ticket-rush is a teaching project for high-concurrency concert ticket sales. It uses Spring Boot, MySQL, Redis Lua, and Kafka to make the difficult parts of a flash-sale system visible: linearization, idempotency, asynchronous order intake, compensation, recovery, and observability.
+---
 
-The goal is not to present a production-ready ticketing platform or an impressive QPS number. The goal is to make every important invariant explicit and testable.
+## 中文
 
-## Safety boundary
+高并发演唱会抢票教学项目：用 Spring Boot、MySQL、Redis Lua 和 Kafka 演示秒杀系统中的线性化点、幂等、异步创单、补偿与库存守恒。
 
-The AI assistant is read-only.
+### 状态
 
-- It may search events, inspect ticket SKUs, and query the signed-in user's orders.
-- It has no rush-ticket, create-order, pay, cancel, inventory, or reminder mutation tool.
-- A request such as “buy this ticket for me” must be redirected to the normal user interface.
-- Any user-initiated mutation must use an explicit authenticated HTTP endpoint outside AI; Kafka consumers and schedulers may continue that deterministic workflow internally.
+早期项目，不再维护。代码与文档保留作学习参考，不保证可用于生产。
 
-There is intentionally no AI ticket-rush tool.
+### 功能
 
-Reminder creation is a normal authenticated `POST /api/reminders` business operation, not an AI
-tool. This describes the backend boundary; it does not claim that the current frontend exposes a
-reminder UI.
+- 短信验证码登录，JWT access token + Redis 存储的 refresh token
+- 演出、票档（SKU）查询，Caffeine + Redis 多级缓存
+- 抢票：Redis Lua 原子预占库存，Redis Stream 预占日志 + 中继投递 Kafka
+- 异步创单：Kafka 消费幂等，订单与消息去重同一 MySQL 事务提交
+- 模拟支付、取消、超时关单；Release Intent 保证库存回补可恢复且幂等
+- 库存对账（available + held + active orders = 配置库存）
+- 管理端：库存初始化、Release Intent 重试
+- 抢票提醒（`/api/reminders`）
+- 只读 AI 助手（LangChain4j）：仅能查询演出、票档和当前用户订单，没有任何写操作工具
+- Vue 3 前端：演出列表、演出详情/抢票、我的订单、AI 对话
+- 压测脚本（`bench/`）与 Prometheus 指标
 
-See [AI read-only boundary](docs/ai/read-only-boundary.md) and [ADR-0003](docs/adr/0003-ai-read-only.md).
+### 技术栈
 
-## What this repository teaches
-
-- Why a MySQL-only stock decrement is easy to reason about but hard to scale.
-- Why Redis Lua gives one atomic reservation point but does not solve cross-system consistency.
-- Why “Redis succeeded, then send Kafka” contains a crash window.
-- How a Reservation Journal and relay make an accepted Rush Request recoverable.
-- How idempotent Order Intake turns Kafka's at-least-once delivery into one durable order.
-- Why an order terminal transition and its Release Intent belong in one MySQL transaction.
-- How to prove inventory conservation with an Inventory Ledger and reconciliation.
-- How to test ack loss, duplicate delivery, process death, Redis restart, and delayed compensation.
-
-The domain vocabulary is defined in [CONTEXT.md](CONTEXT.md).
-
-## Architecture
-
-The worktree implements the main hardened structure and one Flyway-owned schema. Fast tests, a
-real MySQL/Redis integration lane, and one local full-async experiment verify the paths named below;
-real-service fault injection is still required before making production-style reliability claims.
-See [implementation status](docs/architecture/current-vs-target.md) and the
-[2026-07-22 verification report](docs/zh-CN/verification-report.md) for the exact evidence boundary.
-
-```mermaid
-flowchart LR
-    U["User interface"] --> H["Authenticated HTTP"]
-    H --> R["Reservation Module<br/>Redis Lua"]
-    R --> J[("Reservation Journal")]
-    J --> L["Relay Adapter"]
-    L --> K[("Kafka")]
-    K --> O["Order Intake Module"]
-    O --> M[("MySQL orders")]
-    M --> I[("Release Intent")]
-    I --> W["Release Worker"]
-    W --> R
-
-    A["Read-only AI"] --> Q["Query Modules"]
-    Q --> M
-    Q --> C[("Event and SKU views")]
-    A -. "no mutation path" .-> H
-```
-
-The normal success path is:
-
-1. The client submits a Rush Request with an idempotency identity.
-2. Redis Lua validates eligibility, reserves inventory, and records a recoverable Redis Stream journal entry atomically.
-3. A relay publishes the Reservation to Kafka using a deterministic reservation ID.
-4. Order Intake creates the order and records message idempotency in one MySQL transaction.
-5. Payment keeps the reservation consumed. Cancel or timeout writes a Release Intent with the order transition.
-6. A worker applies the release idempotently in Redis and marks the intent complete.
-
-## Implementation and verification
-
-| Area | Implemented structure | Remaining proof |
-|---|---|---|
-| Rush | Lua Reservation, stable ID, idempotency mapping, Redis Stream journal, Cluster hash tags; a 100,000-request Redis stock-and-dedup primitive run and a 1,000-request complete Reservation run passed their conservation gates | Redis restart, lifecycle-GC, and Cluster/failover tests |
-| Kafka handoff | scheduled relay republishes the same reservation ID; old MySQL RESERVED rows recover a lost Redis journal after ledger persistence; one 1,000-request local full-async run ended with zero lag | ack-loss, broker/relay restart, backlog-under-failure, and multi-instance tests |
-| Order intake | inbox, order, and ledger update share one MySQL transaction; real MySQL duplicate delivery and rollback/retry cases passed | process death after message claim and before commit |
-| Cancel/timeout | order transition and durable Release Intent share one transaction; real MySQL/Redis transaction, duplicate-release, and retry-exhaustion tests passed | worker-death-after-Redis replay and live failed-intent re-drive |
-| Inventory recovery | retryable `NEW -> OPENING -> OPENED`; stock-key recovery shares a per-SKU mutex with release and requires buyer evidence plus settled intents | operator pause/audit controls, full buyer/reservation rebuild, and full-Redis-loss recovery exercise |
-| AI and security | query-only tool registry, bounded inputs, atomic OTP consume, fixed-TTL hashed refresh tokens | live-model adversarial tests and deployment hardening |
-| Operations | explicit Kafka topics, readiness, Prometheus metrics, and correctness-gated benchmark harness; local Prometheus snapshots and all three benchmark scenarios were captured | broker failure, repeated-run variance, and capacity exercises |
-| Schema | immutable Flyway V1 through V4 history plus a separate relative-time development seed; Docker DDL removed; blank-database migration passed | guarded V3-to-V4 legacy-upgrade and interrupted-DDL recovery exercises |
-
-The table is deliberately honest: implementation classes, migrations, and fast tests are not substitutes for real-service failure-path tests.
-
-On 2026-07-22, the recorded gate passed 106 fast tests and 27 real-service integration tests. The
-same worktree also passed `bash bench/run.sh all`; those single-machine results are evidence for
-that snapshot, not production capacity claims.
-
-## Technology
-
-| Concern | Choice |
+| 方面 | 选型 |
 |---|---|
-| Runtime | Java 17, Spring Boot 4 |
-| Persistence | MySQL, MyBatis-Plus |
-| Reservation hot path | Redis, Lua |
-| Asynchronous intake | Kafka |
-| Authentication | JWT access token plus Redis-backed refresh token |
-| Local and distributed cache | Caffeine and Redis |
-| AI | LangChain4j with an explicit read-only tool allowlist |
-| Schema evolution | Flyway as the single schema owner |
-| Frontend | Vue 3 and Vite |
+| 后端 | Java 17、Spring Boot 4、MyBatis-Plus |
+| 存储 | MySQL 8.4，Flyway 管理表结构 |
+| 缓存 / 预占 | Redis 7.2、Lua、Redisson、Caffeine |
+| 消息 | Kafka 3.7 |
+| AI | LangChain4j（只读工具白名单） |
+| 前端 | Vue 3、Vue Router、Vite、Axios |
+| 构建 / 部署 | Maven Wrapper、Docker Compose |
 
-## Run locally
+### 本地运行
 
-Start infrastructure without starting the application container:
+前置：JDK 17、Docker、Node.js 22。
 
 ```bash
+# 1. 启动依赖：MySQL :13306 (root/123456)、Redis :16379、Kafka :9092
 docker compose up -d mysql redis kafka
-```
 
-Set the required configuration, then start the backend:
-
-```bash
+# 2. 启动后端（http://127.0.0.1:8081），OPENAI_API_KEY 仅 AI 功能需要
 export JWT_SECRET="$(openssl rand -base64 48)"
 export OPENAI_API_KEY=your_key_if_ai_is_enabled
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+
+# 3. 启动前端（http://127.0.0.1:5173）
+cd frontend && npm ci && npm run dev
 ```
 
-Start the frontend in a second terminal:
+测试：
 
 ```bash
-cd frontend
-npm ci
-npm run dev
+./mvnw test                                                  # 快速测试，不依赖外部服务
+docker compose up -d mysql redis kafka && ./mvnw -Pintegration verify   # 真实服务集成测试
 ```
 
-Backend defaults to http://127.0.0.1:8081 and the Vite frontend defaults to http://127.0.0.1:5173.
+> 注意：集成测试会清空测试用的 Redis 键和数据库数据，请指向专用的空数据库，不要用共享开发库。创建与清理命令见 [运行指南](docs/getting-started/running.md#test)。
 
-Flyway applies the ordered V1 through V4 schema history and the development profile then applies a separate relative-time seed. V4 rejects unresolved legacy rollback tasks, legacy pending orders, and duplicate active orders for one user/SKU before changing durable tables. V3-to-V4 is a stop-the-world protocol upgrade, not a rolling migration. A database created by the old Docker SQL has no automatic adoption path; read [running locally](docs/getting-started/running.md) before reusing it, and do not delete a volume unless it is explicitly disposable.
+Flyway 会自动执行 V1–V4 迁移，dev profile 额外导入开发种子数据。复用旧数据库前请先阅读 [运行指南](docs/getting-started/running.md)。
 
-## Test
+### 目录结构
 
-The default lane is fast and excludes tests tagged `integration`:
-
-```bash
-./mvnw test
+```text
+src/main/java/dev/dahuangggg/ticketrush/
+  controller/  service/  domain/  ai/  infrastructure/  security/  ...
+src/main/resources/
+  db/migration/   Flyway 迁移
+  lua/            Redis Lua 脚本
+src/test/         单元与集成测试
+frontend/         Vue 3 前端
+bench/            压测脚本
+docker/           MySQL / Nginx 配置
+docs/             架构、ADR、测试与中文教学文档
+compose.yaml      本地依赖服务
 ```
 
-The real-service lane expects MySQL, Redis, and Kafka:
+### 文档
 
-```bash
-docker compose up -d mysql redis kafka
-./mvnw -Pintegration verify
-```
+- [完整中文教学文档](docs/zh-CN/README.md)、[原中文说明](README.zh-CN.md)
+- [文档地图](docs/README.md)、[领域术语](CONTEXT.md)、[架构概览](docs/architecture/overview.md)、[ADR](docs/adr/README.md)
+- [AI 只读边界](docs/ai/read-only-boundary.md)、[测试与压测](docs/testing/testing-and-benchmarking.md)、[贡献规范](AGENTS.md)
 
-Point this lane at a dedicated empty database, not a shared development database; the
-[run guide](docs/getting-started/running.md#test) includes explicit create and cleanup commands.
+---
 
-A passing happy-path suite is not sufficient for this project. The consistency suite must also inject failures between side effects and acknowledgements. See [testing and benchmarking](docs/testing/testing-and-benchmarking.md).
+## English
 
-## Documentation
+A teaching project for high-concurrency concert ticket sales. It uses Spring Boot, MySQL, Redis Lua, and Kafka to demonstrate linearization, idempotency, asynchronous order intake, compensation, and inventory conservation in a flash-sale system.
 
-| Start here | Purpose |
+### Status
+
+Early project, no longer actively maintained. Code and docs are kept for learning reference only; not production-ready.
+
+### Features
+
+- SMS-code login with JWT access tokens and Redis-backed refresh tokens
+- Event and ticket SKU queries with Caffeine + Redis multi-level caching
+- Rush: atomic Redis Lua inventory reservation, Redis Stream reservation journal, relay to Kafka
+- Async order intake: idempotent Kafka consumer; order and message dedup commit in one MySQL transaction
+- Simulated payment, cancel, and order timeout; Release Intent makes inventory release recoverable and idempotent
+- Inventory reconciliation (available + held + active orders = configured inventory)
+- Admin endpoints: stock initialization and Release Intent retry
+- Rush reminders (`/api/reminders`)
+- Read-only AI assistant (LangChain4j): can only query events, SKUs, and the current user's orders; no mutation tools
+- Vue 3 frontend: event list, event detail / rush, my orders, AI chat
+- Benchmark harness (`bench/`) and Prometheus metrics
+
+### Tech stack
+
+| Concern | Choice |
 |---|---|
-| [Documentation map](docs/README.md) | Reading paths for learners, reviewers, and operators |
-| [Chinese teaching documentation](docs/zh-CN/README.md) | Current architecture, source walkthroughs, local operation, and measured evidence |
-| [Domain context](CONTEXT.md) | Shared vocabulary and invariants |
-| [Architecture overview](docs/architecture/overview.md) | Modules, seams, data ownership, and system flow |
-| [Core rush flow](docs/architecture/rush-flow.md) | Reservation to order to release |
-| [Consistency case study](docs/architecture/consistency.md) | Reservation, Order Intake, and Release Intent in depth |
-| [Technology comparison](docs/comparisons/data-paths.md) | MySQL versus Redis Lua versus Kafka and relay |
-| [Failure playbook](docs/failures/failure-playbook.md) | Crash windows, recovery, and expected benefits |
-| [Testing](docs/testing/testing-and-benchmarking.md) | Correctness tests, fault injection, and load tests |
-| [Observability](docs/operations/observability.md) | Correlation, metrics, invariants, and alerts |
-| [Security](docs/security/security.md) | Auth, abuse controls, secrets, and trust boundaries |
-| [AI boundary](docs/ai/read-only-boundary.md) | Tool allowlist and prompt-injection defense |
-| [Learning roadmap](docs/learning/roadmap.md) | A staged curriculum |
-| [Run guide](docs/getting-started/running.md) | Local startup and troubleshooting |
-| [Decision records](docs/adr/README.md) | Architectural decisions and their consequences |
+| Backend | Java 17, Spring Boot 4, MyBatis-Plus |
+| Storage | MySQL 8.4, schema owned by Flyway |
+| Cache / reservation | Redis 7.2, Lua, Redisson, Caffeine |
+| Messaging | Kafka 3.7 |
+| AI | LangChain4j (read-only tool allowlist) |
+| Frontend | Vue 3, Vue Router, Vite, Axios |
+| Build / deploy | Maven Wrapper, Docker Compose |
 
-## Scope
+### Getting started
 
-This repository deliberately keeps payments simulated and does not cover real payment-provider settlement, legal identity verification, seat maps, refunds, tax, or multi-region disaster recovery. RAG is also a future teaching extension: the current runtime has no vector store, retrieval dependency, retrieval path, or RAG tool. The legacy `tb_ticket_rule_doc` table remains only because released schema history is immutable; no current runtime component can reach it. These are useful extensions only after the core inventory invariants are proven.
+Prerequisites: JDK 17, Docker, Node.js 22.
 
-## Contribution standard
+```bash
+# 1. Start dependencies: MySQL :13306 (root/123456), Redis :16379, Kafka :9092
+docker compose up -d mysql redis kafka
 
-Read [AGENTS.md](AGENTS.md) before changing the project. A change is not complete merely because it compiles: state which checks ran, preserve the AI read-only boundary, and add a failure-path test whenever a consistency invariant changes.
+# 2. Start the backend (http://127.0.0.1:8081); OPENAI_API_KEY is only needed for AI
+export JWT_SECRET="$(openssl rand -base64 48)"
+export OPENAI_API_KEY=your_key_if_ai_is_enabled
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+
+# 3. Start the frontend (http://127.0.0.1:5173)
+cd frontend && npm ci && npm run dev
+```
+
+Tests:
+
+```bash
+./mvnw test                                                  # fast lane, no external services
+docker compose up -d mysql redis kafka && ./mvnw -Pintegration verify   # real-service integration lane
+```
+
+> Warning: the integration lane deletes test Redis keys and database data. Point it at a dedicated empty database, not a shared development database; see the [run guide](docs/getting-started/running.md#test) for create and cleanup commands.
+
+Flyway applies migrations V1–V4 automatically; the dev profile also loads a development seed. Read the [run guide](docs/getting-started/running.md) before reusing an old database.
+
+### Directory structure
+
+```text
+src/main/java/dev/dahuangggg/ticketrush/
+  controller/  service/  domain/  ai/  infrastructure/  security/  ...
+src/main/resources/
+  db/migration/   Flyway migrations
+  lua/            Redis Lua scripts
+src/test/         Unit and integration tests
+frontend/         Vue 3 frontend
+bench/            Benchmark scripts
+docker/           MySQL / Nginx config
+docs/             Architecture, ADRs, testing, Chinese teaching docs
+compose.yaml      Local dependency services
+```
+
+### Documentation
+
+- [Documentation map](docs/README.md), [Domain context](CONTEXT.md), [Architecture overview](docs/architecture/overview.md), [ADRs](docs/adr/README.md)
+- [AI read-only boundary](docs/ai/read-only-boundary.md), [Testing and benchmarking](docs/testing/testing-and-benchmarking.md), [Contribution guide](AGENTS.md)
